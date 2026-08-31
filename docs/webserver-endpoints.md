@@ -21,6 +21,10 @@ the IP address shown on the device screen.
 | `GET` | `/fonts` | SD-card font manager page |
 | `GET` | `/js/jszip.min.js` | JavaScript asset used by the file manager |
 
+The routes are identical in every firmware. Both page locales are embedded;
+Simplified-Chinese device UI selects `zh-CN`, and every other UI language uses
+the English pages. This follows UI language, not the locked content profile.
+
 ## Device Status
 
 ### `GET /api/status`
@@ -80,6 +84,12 @@ Response:
 
 Hidden dotfiles are omitted unless the device setting `showHiddenFiles` is
 enabled. `System Volume Information` and `XTCache` are always hidden/protected.
+
+The response schema is unchanged for large directories. Entries are scanned
+once and streamed as a chunked response in bounded batches, so the complete
+listing is never retained in RAM. If the server could not reserve its 1400-byte
+batch buffer when network mode started, this endpoint returns HTTP `503` with
+`{"error":"Insufficient memory"}` instead of starting a partial JSON response.
 
 ### `GET /download`
 
@@ -219,11 +229,12 @@ Example item:
 }
 ```
 
-`value` is always an index into `options`, never the option's text. `fontSize`
-is one of the settings whose `options` are built at request time — they are the
-point sizes the selected font family actually ships, so a family installed at
-10/12/14 offers three options. (`fontFamily` and `dictionaryName` vary the same
-way, from the SD card contents.)
+For an enum, `value` is always an index into `options`, never the option's text.
+For a toggle it is `0` or `1`; for a numeric value it is an integer and may be
+negative. `fontSize` is one of the settings whose `options` are built at request
+time — they are the point sizes the selected font family actually ships, so a
+family installed at 10/12/14 offers three options. (`fontFamily` and
+`dictionaryName` vary the same way, from the SD card contents.)
 
 Types:
 
@@ -235,6 +246,19 @@ Types:
 | `string` | `value` |
 
 The font-family setting includes SD-card font families when they are installed.
+
+Reader display settings include:
+
+| Key | Type | Behavior |
+|-----|------|----------|
+| `readingGuideLineEnabled` | toggle | Enables line guides for EPUB and TXT |
+| `readingGuideLineStyle` | enum | Solid, three dash lengths, dotted, or wavy |
+| `readingGuideLineOffset` | value | Signed vertical offset from `-30` to `30` pixels |
+| `readingBackgroundEnabled` | toggle | Uses the existing custom background cache for EPUB and TXT |
+
+The API can enable or disable an existing reading background, but selecting and
+converting a PNG is a device workflow under **Settings > Reader > Reading
+Background > Custom Image**. Disabling the setting does not delete that cache.
 
 ### `POST /api/settings`
 

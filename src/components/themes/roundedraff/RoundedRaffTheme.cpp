@@ -66,11 +66,12 @@ void RoundedRaffTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const 
   int batteryGroupLeftX = batteryIconX;
   if (showBatteryPercentage) {
     // Clear a fixed-width area for the battery percentage to avoid ghosting when digit count changes (e.g. 100% -> 99%)
-    const int maxTextWidth = renderer.getTextWidth(SMALL_FONT_ID, "100%");
+    const int maxTextWidth = renderer.getTextWidth(STATUS_NUMERIC_FONT_ID, "100%");
     batteryGroupLeftX -= maxTextWidth + batteryPercentSpacing;
 
     const int clearW = maxTextWidth + batteryPercentSpacing + RoundedRaffMetrics::values.batteryWidth;
-    const int clearH = std::max(renderer.getTextHeight(SMALL_FONT_ID), RoundedRaffMetrics::values.batteryHeight + 8);
+    const int clearH =
+        std::max(renderer.getTextHeight(STATUS_NUMERIC_FONT_ID), RoundedRaffMetrics::values.batteryHeight + 8);
     renderer.fillRect(batteryIconX - maxTextWidth - batteryPercentSpacing, rect.y + 14, clearW, clearH, false);
   }
 
@@ -85,41 +86,31 @@ void RoundedRaffTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const 
 
 void RoundedRaffTheme::drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
                                   bool selected) const {
-  if (tabs.empty()) {
-    return;
-  }
+  if (tabs.empty()) return;
 
   const int slotWidth = rect.width / static_cast<int>(tabs.size());
   const int tabY = rect.y + 4;
   const int tabHeight = rect.height - 12;
-
   for (size_t i = 0; i < tabs.size(); i++) {
     const int slotX = rect.x + static_cast<int>(i) * slotWidth;
     const int tabX = slotX + 4;
     const int tabWidth = slotWidth - 8;
     const auto& tab = tabs[i];
-
     if (tab.selected) {
       renderer.fillRoundedRect(tabX, tabY, tabWidth, tabHeight, 18, selected ? Color::Black : Color::DarkGray);
     }
-
     const int textWidth = renderer.getTextWidth(kTitleFontId, tab.label, EpdFontFamily::BOLD);
     const int textX = slotX + (slotWidth - textWidth) / 2;
     const int textY = tabY + (tabHeight - renderer.getLineHeight(kTitleFontId)) / 2;
-    renderer.drawText(kTitleFontId, textX, textY, tab.label, !(tab.selected), EpdFontFamily::BOLD);
+    renderer.drawText(kTitleFontId, textX, textY, tab.label, !tab.selected, EpdFontFamily::BOLD);
   }
-
-  // Full-width divider between tabs and setting rows.
   renderer.drawLine(rect.x, rect.y + rect.height - 1, rect.x + rect.width - 1, rect.y + rect.height - 1, true);
 }
 
 bool RoundedRaffTheme::tabIndexFromPoint(const GfxRenderer& renderer, const Rect rect, const std::vector<TabInfo>& tabs,
                                          const int x, const int y, int& index) const {
   (void)renderer;
-  if (tabs.empty() || y < rect.y || y >= rect.y + rect.height || x < rect.x || x >= rect.x + rect.width) {
-    return false;
-  }
-
+  if (tabs.empty() || y < rect.y || y >= rect.y + rect.height || x < rect.x || x >= rect.x + rect.width) return false;
   const int slotWidth = std::max(1, rect.width / static_cast<int>(tabs.size()));
   index = std::min(static_cast<int>(tabs.size()) - 1, (x - rect.x) / slotWidth);
   return true;
@@ -132,6 +123,7 @@ void RoundedRaffTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
   const int tileHeight = rect.height;
   const int tileY = rect.y;
   const bool hasContinueReading = !recentBooks.empty();
+  const bool bookSelected = hasContinueReading && selectorIndex == 0;
   if (coverWidth == 0) {
     coverWidth = RoundedRaffMetrics::values.homeCoverHeight * 0.6;
   }
@@ -197,6 +189,9 @@ void RoundedRaffTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
     renderer.fillRoundedRect(tileX, imgY + RoundedRaffMetrics::values.homeCoverHeight, tileWidth,
                              tileHeight - (imgY - tileY + RoundedRaffMetrics::values.homeCoverHeight), kRowRadius,
                              false, false, true, true, Color::LightGray);
+    if (bookSelected) {
+      renderer.drawRoundedRect(tileX, tileY, tileWidth, tileHeight, 2, kRowRadius, true);
+    }
   } else {
     renderer.fillRoundedRect(tileX, tileY, tileWidth, tileHeight, kRowRadius, Color::LightGray);
     renderer.drawCenteredText(kTitleFontId, rect.y + rect.height / 2 - renderer.getLineHeight(kTitleFontId) / 2,
@@ -243,6 +238,10 @@ void RoundedRaffTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int butt
   drawScrollBar(renderer, rect, buttonCount, pageStartIndex, pageItems);
 }
 
+int RoundedRaffTheme::getMenuRowHeight(const GfxRenderer& renderer) const {
+  return renderer.getLineHeight(kTitleFontId) + 20;
+}
+
 void RoundedRaffTheme::drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode,
                                      int contentStartX, int contentWidth) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
@@ -276,7 +275,8 @@ void RoundedRaffTheme::drawList(const GfxRenderer& renderer, Rect rect, int item
                                 const std::function<std::string(int index)>& rowSubtitle,
                                 const std::function<UIIcon(int index)>& rowIcon,
                                 const std::function<std::string(int index)>& rowValue, bool highlightValue,
-                                const std::function<bool(int index)>& rowDimmed) const {
+                                const std::function<bool(int index)>& rowDimmed, const bool showSelection,
+                                const std::function<bool(int index)>&) const {
   (void)rowIcon;
   (void)highlightValue;
   const bool hasSubtitle = static_cast<bool>(rowSubtitle);
@@ -298,7 +298,7 @@ void RoundedRaffTheme::drawList(const GfxRenderer& renderer, Rect rect, int item
 
   for (int i = pageStartIndex; i < itemCount && i < pageStartIndex + pageItems; i++) {
     const int rowY = rect.y + (i % pageItems) * rowStep;
-    const bool isSelected = i == selectedIndex;
+    const bool isSelected = showSelection && i == selectedIndex;
     const bool dimmed = rowDimmed && rowDimmed(i) && !isSelected;
     renderer.fillRoundedRect(rowX, rowY, rowWidth, rowHeight, kRowRadius, isSelected ? Color::Black : Color::White);
 
@@ -367,7 +367,7 @@ void RoundedRaffTheme::drawList(const GfxRenderer& renderer, Rect rect, int item
 
 void RoundedRaffTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                        const char* btn4) const {
-  if (gpio.hasTouch()) {
+  if (!buttonHintsVisible()) {
     return;
   }
 

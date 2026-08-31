@@ -6,15 +6,24 @@
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalDisplay.h>
+#include <HalFrontlight.h>
 #include <HalGPIO.h>
+#include <HalOtaSlot.h>
 #include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <HalSystem.h>
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <SPI.h>
 #include <WiFi.h>
+#if FREEINK_CAP_TOUCH
+#include <esp_sntp.h>
+#endif
+#if FREEINK_DEVICE_X4PRO
+#include <XteinkDetect.h>
+#endif
 #include <builtinFonts/all.h>
 
 #include <cstring>
@@ -30,10 +39,17 @@
 #include "SdCardFontSystem.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#ifdef ENABLE_CHINESE_VERSION
+#include "activities/settings/FontDownloadActivity.h"
+#include "activities/settings/TextSettingsActivity.h"
+#include "activities/util/ConfirmationActivity.h"
+#endif
+#include "activities/settings/LanguageSelectActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
+#include "platform/UsbSerialJtagHandoff.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 
@@ -44,169 +60,26 @@ FontDecompressor fontDecompressor;
 SdCardFontSystem sdFontSystem;
 FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts());
 static unsigned long allowSleepAt = 0;
+constexpr unsigned long READING_STATS_CHECKPOINT_IDLE_MS = 15UL * 1000UL;
+static unsigned long lastX4ProPowerClickAt = 0;
+
+namespace {
+constexpr unsigned long X4PRO_POWER_DOUBLE_CLICK_MS = 500;
+constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
+}  // namespace
+
+// A wake hold must never become an in-app power-button action.  Boot may continue
+// while the button is held; swallow the one release that ends that wake gesture.
+static bool wakePowerReleasePending = false;
 
 // Fonts
-#ifdef ENABLE_CHINESE_VERSION
-// Chinese build: each Latin EpdFont global aliases the matching-size CJK
-// header (notosans_cjk_{8,10,12,14,16,18}, raw 2-bit bitmaps). Bold /
-// italic / bolditalic variants share the single Regular OTF — bold and
-// italic styling are not available for built-in CJK glyphs in this build.
-// SD-card fonts continue to provide style variants when loaded.
-//
-// CJK character coverage is non-uniform across sizes (see
-// build-cn-builtin-fonts.sh):
-//   - 8/10/12/14pt: full subset (top-3500 现代汉语常用字表 by Zipf, ∪
-//     i18n require-from chars). Sized for reader SMALL/MEDIUM and all UI.
-//   - 16/18pt: i18n-only subset (~650 chars from chinese.yaml + feature
-//     requirements). Sized for reader LARGE/EXTRA_LARGE (intended for
-//     English EPUB) while still letting UI strings render — game win
-//     banners etc. Chinese EPUB text at 16/18pt renders blank for chars
-//     outside the subset.
-EpdFont notoserif14RegularFont(&notosans_cjk_14);
-EpdFont notoserif14BoldFont(&notosans_cjk_14);
-EpdFont notoserif14ItalicFont(&notosans_cjk_14);
-EpdFont notoserif14BoldItalicFont(&notosans_cjk_14);
-EpdFontFamily notoserif14FontFamily(&notoserif14RegularFont, &notoserif14BoldFont, &notoserif14ItalicFont,
-                                    &notoserif14BoldItalicFont);
-#ifndef OMIT_FONTS
-EpdFont notoserif12RegularFont(&notosans_cjk_12);
-EpdFont notoserif12BoldFont(&notosans_cjk_12);
-EpdFont notoserif12ItalicFont(&notosans_cjk_12);
-EpdFont notoserif12BoldItalicFont(&notosans_cjk_12);
-EpdFontFamily notoserif12FontFamily(&notoserif12RegularFont, &notoserif12BoldFont, &notoserif12ItalicFont,
-                                    &notoserif12BoldItalicFont);
-EpdFont notoserif16RegularFont(&notosans_cjk_16);
-EpdFont notoserif16BoldFont(&notosans_cjk_16);
-EpdFont notoserif16ItalicFont(&notosans_cjk_16);
-EpdFont notoserif16BoldItalicFont(&notosans_cjk_16);
-EpdFontFamily notoserif16FontFamily(&notoserif16RegularFont, &notoserif16BoldFont, &notoserif16ItalicFont,
-                                    &notoserif16BoldItalicFont);
-EpdFont notoserif18RegularFont(&notosans_cjk_18);
-EpdFont notoserif18BoldFont(&notosans_cjk_18);
-EpdFont notoserif18ItalicFont(&notosans_cjk_18);
-EpdFont notoserif18BoldItalicFont(&notosans_cjk_18);
-EpdFontFamily notoserif18FontFamily(&notoserif18RegularFont, &notoserif18BoldFont, &notoserif18ItalicFont,
-                                    &notoserif18BoldItalicFont);
+// All legacy built-in reader IDs share one 12pt offline fallback. Complete
+// families, other sizes, and style variants come from SD .cpfont files.
+EpdFont offlineReaderFont(&notosans_cjk_12);
+EpdFontFamily offlineReaderFontFamily(&offlineReaderFont);
 
-EpdFont notosans12RegularFont(&notosans_cjk_12);
-EpdFont notosans12BoldFont(&notosans_cjk_12);
-EpdFont notosans12ItalicFont(&notosans_cjk_12);
-EpdFont notosans12BoldItalicFont(&notosans_cjk_12);
-EpdFontFamily notosans12FontFamily(&notosans12RegularFont, &notosans12BoldFont, &notosans12ItalicFont,
-                                   &notosans12BoldItalicFont);
-EpdFont notosans14RegularFont(&notosans_cjk_14);
-EpdFont notosans14BoldFont(&notosans_cjk_14);
-EpdFont notosans14ItalicFont(&notosans_cjk_14);
-EpdFont notosans14BoldItalicFont(&notosans_cjk_14);
-EpdFontFamily notosans14FontFamily(&notosans14RegularFont, &notosans14BoldFont, &notosans14ItalicFont,
-                                   &notosans14BoldItalicFont);
-EpdFont notosans16RegularFont(&notosans_cjk_16);
-EpdFont notosans16BoldFont(&notosans_cjk_16);
-EpdFont notosans16ItalicFont(&notosans_cjk_16);
-EpdFont notosans16BoldItalicFont(&notosans_cjk_16);
-EpdFontFamily notosans16FontFamily(&notosans16RegularFont, &notosans16BoldFont, &notosans16ItalicFont,
-                                   &notosans16BoldItalicFont);
-EpdFont notosans18RegularFont(&notosans_cjk_18);
-EpdFont notosans18BoldFont(&notosans_cjk_18);
-EpdFont notosans18ItalicFont(&notosans_cjk_18);
-EpdFont notosans18BoldItalicFont(&notosans_cjk_18);
-EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, &notosans18ItalicFont,
-                                   &notosans18BoldItalicFont);
-
-// OpenDyslexic 8/10/12/14pt → matching CJK headers.
-EpdFont opendyslexic8RegularFont(&notosans_cjk_8);
-EpdFont opendyslexic8BoldFont(&notosans_cjk_8);
-EpdFont opendyslexic8ItalicFont(&notosans_cjk_8);
-EpdFont opendyslexic8BoldItalicFont(&notosans_cjk_8);
-EpdFontFamily opendyslexic8FontFamily(&opendyslexic8RegularFont, &opendyslexic8BoldFont, &opendyslexic8ItalicFont,
-                                      &opendyslexic8BoldItalicFont);
-EpdFont opendyslexic10RegularFont(&notosans_cjk_10);
-EpdFont opendyslexic10BoldFont(&notosans_cjk_10);
-EpdFont opendyslexic10ItalicFont(&notosans_cjk_10);
-EpdFont opendyslexic10BoldItalicFont(&notosans_cjk_10);
-EpdFontFamily opendyslexic10FontFamily(&opendyslexic10RegularFont, &opendyslexic10BoldFont, &opendyslexic10ItalicFont,
-                                       &opendyslexic10BoldItalicFont);
-EpdFont opendyslexic12RegularFont(&notosans_cjk_12);
-EpdFont opendyslexic12BoldFont(&notosans_cjk_12);
-EpdFont opendyslexic12ItalicFont(&notosans_cjk_12);
-EpdFont opendyslexic12BoldItalicFont(&notosans_cjk_12);
-EpdFontFamily opendyslexic12FontFamily(&opendyslexic12RegularFont, &opendyslexic12BoldFont, &opendyslexic12ItalicFont,
-                                       &opendyslexic12BoldItalicFont);
-EpdFont opendyslexic14RegularFont(&notosans_cjk_14);
-EpdFont opendyslexic14BoldFont(&notosans_cjk_14);
-EpdFont opendyslexic14ItalicFont(&notosans_cjk_14);
-EpdFont opendyslexic14BoldItalicFont(&notosans_cjk_14);
-EpdFontFamily opendyslexic14FontFamily(&opendyslexic14RegularFont, &opendyslexic14BoldFont, &opendyslexic14ItalicFont,
-                                       &opendyslexic14BoldItalicFont);
-#endif  // OMIT_FONTS
-
-// smallFont (8pt status text) → 8pt CJK header.
-EpdFont smallFont(&notosans_cjk_8);
-EpdFontFamily smallFontFamily(&smallFont);
-
-// UI fonts: 10pt status bar uses the 10pt CJK header so glyphs match the
-// surrounding chrome size; 12pt menu uses the 12pt CJK header.
-EpdFont ui10RegularFont(&notosans_cjk_10);
-EpdFont ui10BoldFont(&notosans_cjk_10);
-EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
-
-EpdFont ui12RegularFont(&notosans_cjk_12);
-EpdFont ui12BoldFont(&notosans_cjk_12);
-EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
-#else  // ENABLE_CHINESE_VERSION
-EpdFont notoserif14RegularFont(&notoserif_14_regular);
-EpdFont notoserif14BoldFont(&notoserif_14_bold);
-EpdFont notoserif14ItalicFont(&notoserif_14_italic);
-EpdFont notoserif14BoldItalicFont(&notoserif_14_bolditalic);
-EpdFontFamily notoserif14FontFamily(&notoserif14RegularFont, &notoserif14BoldFont, &notoserif14ItalicFont,
-                                    &notoserif14BoldItalicFont);
-#ifndef OMIT_FONTS
-EpdFont notoserif12RegularFont(&notoserif_12_regular);
-EpdFont notoserif12BoldFont(&notoserif_12_bold);
-EpdFont notoserif12ItalicFont(&notoserif_12_italic);
-EpdFont notoserif12BoldItalicFont(&notoserif_12_bolditalic);
-EpdFontFamily notoserif12FontFamily(&notoserif12RegularFont, &notoserif12BoldFont, &notoserif12ItalicFont,
-                                    &notoserif12BoldItalicFont);
-EpdFont notoserif16RegularFont(&notoserif_16_regular);
-EpdFont notoserif16BoldFont(&notoserif_16_bold);
-EpdFont notoserif16ItalicFont(&notoserif_16_italic);
-EpdFont notoserif16BoldItalicFont(&notoserif_16_bolditalic);
-EpdFontFamily notoserif16FontFamily(&notoserif16RegularFont, &notoserif16BoldFont, &notoserif16ItalicFont,
-                                    &notoserif16BoldItalicFont);
-EpdFont notoserif18RegularFont(&notoserif_18_regular);
-EpdFont notoserif18BoldFont(&notoserif_18_bold);
-EpdFont notoserif18ItalicFont(&notoserif_18_italic);
-EpdFont notoserif18BoldItalicFont(&notoserif_18_bolditalic);
-EpdFontFamily notoserif18FontFamily(&notoserif18RegularFont, &notoserif18BoldFont, &notoserif18ItalicFont,
-                                    &notoserif18BoldItalicFont);
-
-EpdFont notosans12RegularFont(&notosans_12_regular);
-EpdFont notosans12BoldFont(&notosans_12_bold);
-EpdFont notosans12ItalicFont(&notosans_12_italic);
-EpdFont notosans12BoldItalicFont(&notosans_12_bolditalic);
-EpdFontFamily notosans12FontFamily(&notosans12RegularFont, &notosans12BoldFont, &notosans12ItalicFont,
-                                   &notosans12BoldItalicFont);
-EpdFont notosans14RegularFont(&notosans_14_regular);
-EpdFont notosans14BoldFont(&notosans_14_bold);
-EpdFont notosans14ItalicFont(&notosans_14_italic);
-EpdFont notosans14BoldItalicFont(&notosans_14_bolditalic);
-EpdFontFamily notosans14FontFamily(&notosans14RegularFont, &notosans14BoldFont, &notosans14ItalicFont,
-                                   &notosans14BoldItalicFont);
-EpdFont notosans16RegularFont(&notosans_16_regular);
-EpdFont notosans16BoldFont(&notosans_16_bold);
-EpdFont notosans16ItalicFont(&notosans_16_italic);
-EpdFont notosans16BoldItalicFont(&notosans_16_bolditalic);
-EpdFontFamily notosans16FontFamily(&notosans16RegularFont, &notosans16BoldFont, &notosans16ItalicFont,
-                                   &notosans16BoldItalicFont);
-EpdFont notosans18RegularFont(&notosans_18_regular);
-EpdFont notosans18BoldFont(&notosans_18_bold);
-EpdFont notosans18ItalicFont(&notosans_18_italic);
-EpdFont notosans18BoldItalicFont(&notosans_18_bolditalic);
-EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, &notosans18ItalicFont,
-                                   &notosans18BoldItalicFont);
-
-#endif  // OMIT_FONTS
-
+// International UI fonts remain primary; CJK subsets are selected only when
+// the primary is missing a Han glyph.
 EpdFont smallFont(&notosans_8_regular);
 EpdFontFamily smallFontFamily(&smallFont);
 
@@ -217,13 +90,20 @@ EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
 EpdFont ui12RegularFont(&ubuntu_12_regular);
 EpdFont ui12BoldFont(&ubuntu_12_bold);
 EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
-#endif  // ENABLE_CHINESE_VERSION
 
-#ifdef ENABLE_CHINESE_VERSION
+EpdFont cjk8Font(&notosans_cjk_8);
+EpdFontFamily cjk8FontFamily(&cjk8Font);
+EpdFont cjk10Font(&notosans_cjk_10);
+EpdFontFamily cjk10FontFamily(&cjk10Font);
+EpdFont cjk12Font(&notosans_cjk_12);
+EpdFontFamily cjk12FontFamily(&cjk12Font);
+constexpr int CJK_UI_8_FONT_ID = 0x434A4B08;
+constexpr int CJK_UI_10_FONT_ID = 0x434A4B0A;
+constexpr int CJK_UI_12_FONT_ID = 0x434A4B0C;
+
 // Chinese chess piece glyphs (subset CJK font, 14 characters at 16pt).
 EpdFont chineseChessPieceFont(&chinese_chess_16);
 EpdFontFamily chineseChessPieceFontFamily(&chineseChessPieceFont);
-#endif
 
 // measurement of power button press duration calibration value
 unsigned long t1 = 0;
@@ -232,17 +112,23 @@ unsigned long t2 = 0;
 // Definitions for SilentRestart.h. RTC_NOINIT survives ESP.restart() but not power loss.
 RTC_NOINIT_ATTR uint32_t silentRebootMagic;
 RTC_NOINIT_ATTR uint32_t silentRebootTarget;
+RTC_NOINIT_ATTR uint32_t silentRebootFontPointSize;
 constexpr uint32_t SILENT_REBOOT_MAGIC = 0xC1EAB007;
-constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
-constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
+enum class SilentRebootTarget : uint32_t {
+  Home,
+  Reader,
+  ReaderSuppressFontPrompt,
+  ReaderPreloadChineseFont,
+  Count,
+};
 
 // How the device is coming back to life, resolved once at boot. Both resume
 // flows suppress the splash and leave the panel holding its pre-boot frame; a
 // plain boot shows the splash. See setup() for the resolution.
 enum class BootResume : uint8_t {
-  Splash,       // cold boot, flash, panic, or plain reboot
-  Silent,       // heap-defrag ESP.restart() (RTC flag; lost on power loss)
-  QuickResume,  // wake from a quick-resume deep sleep (SD flag; survives power loss)
+  Splash,          // cold boot, flash, panic, or plain reboot
+  Silent,          // heap-defrag ESP.restart() (RTC flag; lost on power loss)
+  SplashlessWake,  // wake from deep sleep with the splash suppressed by the SD flag
 };
 
 // Latched true once enterDeepSleep() commits to sleeping, before it tears down
@@ -253,9 +139,24 @@ enum class BootResume : uint8_t {
 // startDeepSleep() does not return, so a set latch only ends at the wakeup reset.
 static bool deepSleepInProgress = false;
 
+#if FREEINK_CAP_TOUCH
+static bool finishWifiSessionWithoutRestart() {
+  if (!BoardConfig::hasTouch()) return false;
+  if (esp_sntp_enabled()) esp_sntp_stop();
+  WiFi.mode(WIFI_OFF);
+  delay(100);
+  LOG_DBG("MAIN", "WiFi stopped without restart on touch device");
+  return true;
+}
+#endif
+
 void silentRestart() {
   if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
-  silentRebootTarget = SILENT_REBOOT_TARGET_HOME;
+#if FREEINK_CAP_TOUCH
+  if (finishWifiSessionWithoutRestart()) return;
+#endif
+  silentRebootTarget = static_cast<uint32_t>(SilentRebootTarget::Home);
+  silentRebootFontPointSize = 0;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
   LOG_DBG("MAIN", "Silent restart (target=home)");
   // E-ink retains the previous frame until Home's first paint lands (~2-3s).
@@ -267,14 +168,66 @@ void silentRestart() {
   ESP.restart();
 }
 
-void silentRestartToReader() {
+void silentRestartToReader(const bool suppressChineseFontPrompt) {
   if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
-  silentRebootTarget = SILENT_REBOOT_TARGET_READER;
+#if FREEINK_CAP_TOUCH
+  if (finishWifiSessionWithoutRestart()) return;
+#endif
+  silentRebootTarget = static_cast<uint32_t>(suppressChineseFontPrompt ? SilentRebootTarget::ReaderSuppressFontPrompt
+                                                                       : SilentRebootTarget::Reader);
+  silentRebootFontPointSize = 0;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
-  LOG_DBG("MAIN", "Silent restart (target=reader)");
+  LOG_DBG("MAIN", "Silent restart (target=reader%s)", suppressChineseFontPrompt ? ", suppress-font-prompt" : "");
   GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   delay(50);
   ESP.restart();
+}
+
+void silentRestartToReaderAndPreloadChineseFont(const uint8_t pointSize) {
+  if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
+  silentRebootTarget = static_cast<uint32_t>(SilentRebootTarget::ReaderPreloadChineseFont);
+  silentRebootFontPointSize = pointSize;
+  silentRebootMagic = SILENT_REBOOT_MAGIC;
+  LOG_DBG("MAIN", "Silent restart (target=reader-preload-font, size=%u)", static_cast<unsigned>(pointSize));
+  GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  delay(50);
+  ESP.restart();
+}
+
+void restartToHomeAfterStorageHandoff() {
+  if (deepSleepInProgress) return;  // sleeping supersedes the storage handoff reboot
+  silentRebootTarget = static_cast<uint32_t>(SilentRebootTarget::Home);
+  silentRebootFontPointSize = 0;
+  silentRebootMagic = SILENT_REBOOT_MAGIC;
+  LOG_DBG("MAIN", "Restart after storage handoff (target=home)");
+  GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  delay(50);
+  handoffUsbOtgToSerialJtag();
+  ESP.restart();
+}
+
+bool handleX4ProFrontlightDoubleClick() {
+  if (!BoardConfig::isX4Pro() || !gpio.wasReleased(HalGPIO::BTN_POWER)) {
+    return false;
+  }
+
+  const unsigned long now = millis();
+  if (gpio.getPowerButtonHeldTime() > X4PRO_POWER_CLICK_MAX_HOLD_MS) {
+    lastX4ProPowerClickAt = 0;
+    return false;
+  }
+  if (lastX4ProPowerClickAt == 0 || now - lastX4ProPowerClickAt > X4PRO_POWER_DOUBLE_CLICK_MS) {
+    lastX4ProPowerClickAt = now;
+    return false;
+  }
+
+  lastX4ProPowerClickAt = 0;
+  const bool lightOn = !Frontlight.isOn();
+  Frontlight.setOn(lightOn);
+  SETTINGS.frontlightOn = lightOn ? 1 : 0;
+  SETTINGS.saveToFile();
+  LOG_INF("LIGHT", "Frontlight toggled %s by power-button double-click", lightOn ? "on" : "off");
+  return true;
 }
 
 void waitForPowerRelease() {
@@ -317,7 +270,9 @@ void enterDeepSleep(bool fromTimeout = false) {
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
       (fromTimeout &&
        SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT);
-  APP_STATE.showBootScreen = !isQuickResumeSleep;
+  // Every sleep mode leaves a complete retained frame on the e-ink panel. Keep
+  // it visible until the first useful reader or home paint replaces it.
+  APP_STATE.showBootScreen = false;
 
   APP_STATE.saveToFile();
 
@@ -326,8 +281,18 @@ void enterDeepSleep(bool fromTimeout = false) {
   deepSleepInProgress = true;
   activityManager.goToSleep(fromTimeout);
 
+  if (!READING_STATS.saveToFile()) {
+    LOG_ERR("RST", "Failed to save reading stats before deep sleep");
+  }
+  if (!ACHIEVEMENTS.saveToFile()) {
+    LOG_ERR("ACH", "Failed to save achievements before deep sleep");
+  }
+
   if (isQuickResumeSleep) {
     saveSleepFrameBuffer();
+  } else if (Storage.exists(SLEEP_FRAME_FILE)) {
+    // A stale Quick Resume frame must not replace the selected sleep screen during wake.
+    Storage.remove(SLEEP_FRAME_FILE);
   }
 
   // Tear down WiFi so the modem power domain isn't held alive across deep sleep.
@@ -338,60 +303,149 @@ void enterDeepSleep(bool fromTimeout = false) {
   }
 
   halTiltSensor.deepSleep();
+  Frontlight.setOn(false);
   display.deepSleep();
   LOG_DBG("MAIN", "Entering deep sleep");
 
   powerManager.startDeepSleep(gpio);
 }
 
-void setupDisplayAndFonts(bool seamless = false) {
+bool setupDisplayAndFonts(bool seamless = false, bool logSdFontLoadHeap = false) {
+#if FREEINK_DEVICE_X4PRO
+  // X4 Pro batches use SSD1677 or UC81xx. Resolve the controller before
+  // display.begin(); C3 X3/X4 already do this once in HalGPIO::begin().
+  static bool controllerResolved = false;
+  if (!controllerResolved) {
+    controllerResolved = true;
+    freeink::applyXteinkDisplayController();
+  }
+#endif
+
   display.begin(seamless);
+#if FREEINK_DEVICE_MURPHY_M4
+  if (!gpio.restoreTouchAfterDisplayReset()) {
+    LOG_ERR("MAIN", "Failed to restore Murphy M4 touch after display reset");
+  }
+#endif
   renderer.begin();
   activityManager.begin();
   LOG_DBG("MAIN", "Display initialized");
 
   // Initialize font decompressor for compressed reader fonts
-  if (!fontDecompressor.init()) {
+  const bool fontDecompressorReady = fontDecompressor.init();
+  if (!fontDecompressorReady) {
     LOG_ERR("MAIN", "Font decompressor init failed");
   }
   fontCacheManager.setFontDecompressor(&fontDecompressor);
   renderer.setFontCacheManager(&fontCacheManager);
-  renderer.insertFont(NOTOSERIF_14_FONT_ID, notoserif14FontFamily);
+  renderer.insertFont(NOTOSERIF_14_FONT_ID, offlineReaderFontFamily);
 #ifndef OMIT_FONTS
-  renderer.insertFont(NOTOSERIF_12_FONT_ID, notoserif12FontFamily);
-  renderer.insertFont(NOTOSERIF_16_FONT_ID, notoserif16FontFamily);
-  renderer.insertFont(NOTOSERIF_18_FONT_ID, notoserif18FontFamily);
+  renderer.insertFont(NOTOSERIF_12_FONT_ID, offlineReaderFontFamily);
+  renderer.insertFont(NOTOSERIF_16_FONT_ID, offlineReaderFontFamily);
+  renderer.insertFont(NOTOSERIF_18_FONT_ID, offlineReaderFontFamily);
 
-  renderer.insertFont(NOTOSANS_12_FONT_ID, notosans12FontFamily);
-  renderer.insertFont(NOTOSANS_14_FONT_ID, notosans14FontFamily);
-  renderer.insertFont(NOTOSANS_16_FONT_ID, notosans16FontFamily);
-  renderer.insertFont(NOTOSANS_18_FONT_ID, notosans18FontFamily);
+  renderer.insertFont(NOTOSANS_12_FONT_ID, offlineReaderFontFamily);
+  renderer.insertFont(NOTOSANS_14_FONT_ID, offlineReaderFontFamily);
+  renderer.insertFont(NOTOSANS_16_FONT_ID, offlineReaderFontFamily);
+  renderer.insertFont(NOTOSANS_18_FONT_ID, offlineReaderFontFamily);
 #endif  // OMIT_FONTS
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
-#ifdef ENABLE_CHINESE_VERSION
+  renderer.insertFont(CJK_UI_8_FONT_ID, cjk8FontFamily);
+  renderer.insertFont(CJK_UI_10_FONT_ID, cjk10FontFamily);
+  renderer.insertFont(CJK_UI_12_FONT_ID, cjk12FontFamily);
+  renderer.setFallbackFont(SMALL_FONT_ID, CJK_UI_8_FONT_ID);
+  renderer.setFallbackFont(UI_10_FONT_ID, CJK_UI_10_FONT_ID);
+  renderer.setFallbackFont(UI_12_FONT_ID, CJK_UI_12_FONT_ID);
+  renderer.insertFont(BaseTheme::STATUS_NUMERIC_FONT_ID, smallFontFamily);
   renderer.insertFont(CHINESE_CHESS_FONT_ID, chineseChessPieceFontFamily);
-#endif
 
   // Discover and load SD card fonts
+  if (logSdFontLoadHeap) {
+    LOG_INF("FONT", "Clean restart before font load: free=%u, maxAlloc=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()));
+  }
   sdFontSystem.begin(renderer);
 
   LOG_DBG("MAIN", "Fonts setup");
+  return fontDecompressorReady;
 }
+
+#ifdef ENABLE_CHINESE_VERSION
+void continueChineseFontInstall(const uint8_t expectedPointSize) {
+  if (APP_STATE.openEpubPath.empty() || !Storage.exists(APP_STATE.openEpubPath.c_str())) {
+    LOG_ERR("FONT", "Cannot resume automatic font install: original EPUB is unavailable");
+    activityManager.goHome();
+    return;
+  }
+
+  const bool fontReady =
+      strcmp(SETTINGS.sdFontFamilyName, SdCardFontSystem::COMPLETE_CHINESE_NOTO_SANS_FAMILY) == 0 &&
+      SETTINGS.fontPointSize == expectedPointSize &&
+      sdFontSystem.resolveFontId(SdCardFontSystem::COMPLETE_CHINESE_NOTO_SANS_FAMILY, expectedPointSize) != 0;
+  if (!fontReady) {
+    LOG_ERR("FONT", "Failed to load selected family %s at point size %u after clean restart",
+            SdCardFontSystem::COMPLETE_CHINESE_NOTO_SANS_FAMILY, static_cast<unsigned>(expectedPointSize));
+    SETTINGS.clearSdFontFamily();
+    SETTINGS.fontPointSize = expectedPointSize;
+    if (!SETTINGS.saveToFile()) LOG_ERR("FONT", "Failed to restore reader point size after font load failure");
+  }
+
+  activityManager.goToReader(APP_STATE.openEpubPath);
+  activityManager.loop();
+  if (!activityManager.isReaderActivity()) {
+    LOG_ERR("FONT", "Cannot resume automatic font install: reader allocation failed");
+    activityManager.goHome();
+    return;
+  }
+
+  if (!fontReady) {
+    auto error = makeUniqueNoThrow<FontDownloadActivity>(renderer, mappedInputManager,
+                                                         FontDownloadActivity::Purpose::ReaderAutoInstall,
+                                                         FontDownloadActivity::StartMode::ResumeFontLoadError);
+    if (!error) {
+      LOG_ERR("FONT", "OOM allocating resumed FontDownloadActivity (%zu bytes)", sizeof(FontDownloadActivity));
+      return;
+    }
+    activityManager.pushActivity(std::move(error));
+    activityManager.loop();
+    return;
+  }
+
+  auto textSettings = makeUniqueNoThrow<TextSettingsActivity>(
+      renderer, mappedInputManager, &sdFontSystem.registry(), TextSettingsActivity::Tab::Family,
+      TextSettingsActivity::InitialFontState::Changed, TextSettingsActivity::StartMode::PreloadThenExit);
+  if (textSettings) {
+    activityManager.pushActivity(std::move(textSettings));
+    activityManager.loop();
+    return;
+  }
+
+  LOG_ERR("FONT", "OOM allocating automatic TextSettingsActivity (%zu bytes)", sizeof(TextSettingsActivity));
+  SETTINGS.sdFontFlashPreload = 0;
+  if (!SETTINGS.saveToFile()) LOG_ERR("FONT", "Failed to persist disabled font preload after OOM");
+
+  auto notice = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInputManager, "", tr(STR_FONT_PRELOAD_FAILED),
+                                                        ConfirmationActivity::BodyPlacement::PopupTitle);
+  if (!notice) {
+    LOG_ERR("FONT", "OOM allocating font preload failure notice (%zu bytes)", sizeof(ConfirmationActivity));
+    return;
+  }
+  activityManager.pushActivity(std::move(notice));
+  activityManager.loop();
+}
+#endif
 
 void setup() {
   BoardConfig::holdPowerRails();
 
-  t1 = millis();
-
 #ifdef ENABLE_SERIAL_LOG
-  // Earliest possible Serial setup. The 250 ms stall before begin() lets the
-  // USB Serial/JTAG peripheral finish power-on and lets the host complete USB
-  // enumeration before we touch the CDC state — otherwise cold boot races
-  // and the host has to be physically replugged for logs to flow. Warm reboot
-  // worked without the delay because USB was already enumerated.
+#ifdef CROSSPOINT_WAIT_FOR_USB_SERIAL
+  // Development builds preserve reliable early CDC logs; release builds let
+  // enumeration proceed asynchronously so users do not pay this startup cost.
   delay(250);
+#endif
   Serial.begin(115200);
 #if LOG_SERIAL_HAS_TX_TIMEOUT
   logSerial.setTxTimeoutMs(1);  // This is a load-bearing 1. Do not modify.
@@ -399,36 +453,97 @@ void setup() {
 #endif
 
   HalSystem::begin();
+  const bool otaPendingAtBoot = HalOtaSlot::runningImageState() == HalOtaSlot::RunningImageState::PendingVerify;
 
   // Read-and-clear so a panic later in setup() doesn't loop into silent reboot.
   // Bound the target range too — RTC_NOINIT memory is uninitialized on cold boot.
   const bool isSilentReboot = (silentRebootMagic == SILENT_REBOOT_MAGIC);
-  const uint32_t snapshotTarget =
-      (isSilentReboot && silentRebootTarget <= SILENT_REBOOT_TARGET_READER) ? silentRebootTarget : 0;
+  const bool targetIsValid = isSilentReboot && silentRebootTarget < static_cast<uint32_t>(SilentRebootTarget::Count);
+  SilentRebootTarget snapshotTarget =
+      targetIsValid ? static_cast<SilentRebootTarget>(silentRebootTarget) : SilentRebootTarget::Home;
+  const bool fontPointSizeIsValid = snapshotTarget == SilentRebootTarget::ReaderPreloadChineseFont &&
+                                    silentRebootFontPointSize > 0 && silentRebootFontPointSize <= UINT8_MAX;
+  const uint8_t snapshotFontPointSize =
+      snapshotTarget == SilentRebootTarget::ReaderPreloadChineseFont && fontPointSizeIsValid
+          ? static_cast<uint8_t>(silentRebootFontPointSize)
+          : 0;
+  if (snapshotTarget == SilentRebootTarget::ReaderPreloadChineseFont && snapshotFontPointSize == 0) {
+    snapshotTarget = SilentRebootTarget::Home;
+  }
   silentRebootMagic = 0;
   silentRebootTarget = 0;
+  silentRebootFontPointSize = 0;
+#ifdef ENABLE_CHINESE_VERSION
+  if (snapshotTarget == SilentRebootTarget::ReaderSuppressFontPrompt ||
+      snapshotTarget == SilentRebootTarget::ReaderPreloadChineseFont) {
+    FontDownloadActivity::suppressChineseFontPromptThisBoot();
+  }
+#endif
 
   gpio.begin();
   powerManager.begin();
+
+  const auto wakeupReason = gpio.getWakeupReason();
+  if (wakeupReason == HalGPIO::WakeupReason::PowerButton && !gpio.verifyPowerButtonWakeup()) {
+    LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
+    powerManager.startDeepSleep(gpio);
+  }
+
   halTiltSensor.begin();
   halClock.begin();
 
-  LOG_INF("MAIN", "Hardware detect: %s", gpio.deviceIsX3() ? "X3" : "X4");
+  LOG_INF("MAIN", "Hardware detect: %s", BoardConfig::ACTIVE.name);
+
+  bool recoveryFirmwareMode = false;
+#if !FREEINK_DEVICE_PAPERMONO
+  if (wakeupReason == HalGPIO::WakeupReason::PowerButton) {
+    const unsigned long settleStart = millis();
+    while (millis() - settleStart < 500) {
+      gpio.update();
+      delay(10);
+    }
+    const uint8_t recoveryButton =
+        (BoardConfig::isX4Pro() || FREEINK_DEVICE_X4CLASSIC) ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP;
+    recoveryFirmwareMode = gpio.isPressed(recoveryButton);
+    if (recoveryFirmwareMode) {
+      LOG_INF("MAIN", "Recovery firmware mode (%s + POWER held at boot)",
+              (BoardConfig::isX4Pro() || FREEINK_DEVICE_X4CLASSIC) ? "DOWN" : "UP");
+    }
+  }
+#endif
 
   // SD Card Initialization
   // We need 6 open files concurrently when parsing a new chapter
   if (!Storage.begin()) {
     LOG_ERR("MAIN", "SD card initialization failed");
-    setupDisplayAndFonts(isSilentReboot);
+    const bool fontsReady = setupDisplayAndFonts(isSilentReboot);
     activityManager.goToFullScreenMessage("SD card error", EpdFontFamily::BOLD);
+    activityManager.requestUpdateAndWait();
+    if (otaPendingAtBoot && fontsReady) {
+      if (HalOtaSlot::confirmRunningImage()) {
+        LOG_INF("OTA", "Running image confirmed after SD error display");
+      } else {
+        LOG_ERR("OTA", "Running image confirmation failed after SD error display");
+      }
+    }
     return;
   }
 
   HalSystem::checkPanic();
 
-  SETTINGS.loadFromFile();
+  if (gpio.hasTouch()) SETTINGS.readerMenuStyle = CrossPointSettings::READER_MENU_TOOLBAR;
+  const bool settingsLoaded = SETTINGS.loadFromFile();
+  const auto onboardingMode =
+      settingsLoaded ? LanguageSelectActivity::Mode::Upgrade : LanguageSelectActivity::Mode::Initial;
+  const bool requiresOnboarding = CrossPointSettings::requiresOnboarding(SETTINGS.onboardingVersion);
+#ifndef SIMULATOR
+  halClock.setUseChinaServers(SETTINGS.contentProfile == CrossPointSettings::ContentProfile::China);
+#endif
   halClock.setAutoSyncEnabled(SETTINGS.clockAutoSync != 0);
   APP_STATE.loadFromFile();
+  const bool isSleepWake = wakeupReason == HalGPIO::WakeupReason::PowerButton;
+  const bool isPersistedSleepWake = isSleepWake && !APP_STATE.showBootScreen;
+
   RECENT_BOOKS.loadFromFile();
   READING_STATS.loadFromFile();
   ACHIEVEMENTS.loadFromFile();
@@ -438,7 +553,9 @@ void setup() {
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
-  const auto wakeupReason = gpio.getWakeupReason();
+  const bool restoreLightOn = SETTINGS.frontlightOn != 0 && (SETTINGS.frontlightRestoreOnWake != 0 || isSilentReboot);
+  Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth, restoreLightOn);
+
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
       LOG_DBG("MAIN", "Verifying power button press duration");
@@ -446,36 +563,28 @@ void setup() {
                                         SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP)) {
         powerManager.startDeepSleep(gpio);
       }
+      wakePowerReleasePending = true;
       break;
     case HalGPIO::WakeupReason::AfterUSBPower:
-      // If USB power caused a cold boot, go back to sleep
+      // Most devices return to sleep after a USB-powered cold boot.
       LOG_DBG("MAIN", "Wakeup reason: After USB Power");
+#if FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_EEGO_A4
+      // X4 Pro must stay awake so USB Serial/JTAG remains available after leaving
+      // USB Drive and reconnecting the cable. Paper Mono has no armable GPIO wake
+      // (its button is behind the PMIC). EEGO A4's post-flash reset reads as
+      // POWERON (native-USB), so a flash would otherwise be misclassified as a
+      // USB-power cold boot and sleep. Sleeping any of these here would strand
+      // the device in a USB-replug boot loop (or sleep right after a flash).
+      break;
+#else
       powerManager.startDeepSleep(gpio);
       break;
+#endif
     case HalGPIO::WakeupReason::AfterFlash:
       // After flashing, just proceed to boot
     case HalGPIO::WakeupReason::Other:
     default:
       break;
-  }
-
-  // Recovery firmware mode: hold left side button (BTN_UP) together with the power button at
-  // boot to skip directly to the SD-card firmware update screen. Useful on devices where USB
-  // flashing has been locked down (e.g. recent X3 firmware).
-  bool recoveryFirmwareMode = false;
-  if (wakeupReason == HalGPIO::WakeupReason::PowerButton) {
-    // Refresh the cached button state a few times — isPressed() needs ~half a second to settle
-    // after boot per the HalGPIO contract. Use a millis-based deadline so we always wait the full
-    // settle window even if the loop body takes longer than expected on slow boots.
-    const unsigned long settleStart = millis();
-    while (millis() - settleStart < 500) {
-      gpio.update();
-      delay(10);
-    }
-    if (gpio.isPressed(HalGPIO::BTN_UP)) {
-      recoveryFirmwareMode = true;
-      LOG_INF("MAIN", "Recovery firmware mode (UP + POWER held at boot)");
-    }
   }
 
   // First serial output only here to avoid timing inconsistencies for power button press duration verification
@@ -485,57 +594,81 @@ void setup() {
   // skips the panel-clearing pass and the X3 initial-full-sync arming (see
   // HalDisplay::begin), so the first paint is FAST_REFRESH (~500ms) over the
   // retained frame and input dispatches against a visible UI.
-  const BootResume resume = isSilentReboot              ? BootResume::Silent
-                            : !APP_STATE.showBootScreen ? BootResume::QuickResume
-                                                        : BootResume::Splash;
+  // Only a verified deep-sleep wake may use the one-shot persisted flag.
+  // Otherwise a stale flag could suppress the splash on a cold boot.
+  const BootResume resume = isSilentReboot         ? BootResume::Silent
+                            : isPersistedSleepWake ? BootResume::SplashlessWake
+                                                   : BootResume::Splash;
   bool allowFastInitialReaderRefresh = false;
+  bool needsWakeRefresh = false;
 
-  setupDisplayAndFonts(resume != BootResume::Splash);
+  const bool fontsReady = setupDisplayAndFonts(resume != BootResume::Splash,
+                                               snapshotTarget == SilentRebootTarget::ReaderPreloadChineseFont);
+  const bool postOtaBoot = otaPendingAtBoot && fontsReady && activityManager.goToPostOtaBoot(!recoveryFirmwareMode);
 
-  switch (resume) {
-    case BootResume::Silent:
-      // Splash skipped: the routing block below picks the target activity; the
-      // panel keeps showing the pre-reboot popup until that first paint lands.
-      break;
-    case BootResume::QuickResume:
-      // One-shot flag: re-arm the splash for the next non-quick-resume boot. Save
-      // before any painting so a hang in the blocking paint path can't strand
-      // us in a quick-resume-with-no-frame loop on the next boot.
-      APP_STATE.showBootScreen = true;
-      APP_STATE.saveToFile();
-      if (loadSleepFrameBuffer()) {
-        const bool useDifferentialRefresh = gpio.deviceIsX3();
-        if (useDifferentialRefresh) {
-          // begin() clears the X3 controller RAM, so restore the saved frame as
-          // the baseline before replacing the moon with the loading icon.
-          renderer.cleanupGrayscaleWithFrameBuffer();
-        }
+  if (!postOtaBoot) {
+    switch (resume) {
+      case BootResume::Silent:
+        // Splash skipped: the routing block below picks the target activity; the
+        // panel keeps showing the pre-reboot popup until that first paint lands.
+        break;
+      case BootResume::SplashlessWake:
+        // One-shot flag: re-arm the splash for the next ordinary boot. Save
+        // before any painting so a hang in the blocking paint path can't strand
+        // us in a splashless-with-no-frame loop on the next boot.
+        APP_STATE.showBootScreen = true;
+        APP_STATE.saveToFile();
+        if (Storage.exists(SLEEP_FRAME_FILE) && loadSleepFrameBuffer()) {
+          const bool useDifferentialRefresh = gpio.deviceIsX3();
+          if (useDifferentialRefresh) {
+            // begin() clears the X3 controller RAM, so restore the saved frame as
+            // the baseline before replacing the moon with the loading icon.
+            renderer.cleanupGrayscaleWithFrameBuffer();
+          }
 
-        const auto pageHeight = renderer.getScreenHeight();
-        renderer.drawImage(LoadingIcon, 0, pageHeight - LOADINGICON_HEIGHT, LOADINGICON_WIDTH, LOADINGICON_HEIGHT);
-        if (useDifferentialRefresh) {
-          renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
-          allowFastInitialReaderRefresh = true;
+          const auto pageHeight = renderer.getScreenHeight();
+          renderer.drawImage(LoadingIcon, 0, pageHeight - LOADINGICON_HEIGHT, LOADINGICON_WIDTH, LOADINGICON_HEIGHT);
+          if (useDifferentialRefresh) {
+            renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
+            allowFastInitialReaderRefresh = true;
+          } else {
+            renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+          }
         } else {
-          renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+          // The panel still physically shows the sleep image, so clean the
+          // first Home paint without adding a separate refresh cycle.
+          needsWakeRefresh = true;
         }
-      } else {
-        activityManager.goToBoot();  // frame file missing, fall back to the splash
-      }
-      break;
-    case BootResume::Splash:
-      activityManager.goToBoot();
-      break;
+        break;
+      case BootResume::Splash:
+        activityManager.goToBoot();
+        break;
+    }
   }
 
   if (recoveryFirmwareMode) {
     // Skip normal home/reader routing: jump straight into the SD firmware picker.
-    activityManager.replaceActivity(
-        std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/true));
+    activityManager.replaceActivityWith<SdFirmwareUpdateActivity>(/*recoveryMode=*/true);
   } else if (HalSystem::isRebootFromPanic()) {
     // If we rebooted from a panic, go to crash report screen to show the panic info
     activityManager.goToCrashReport();
-  } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_READER &&
+  } else if (postOtaBoot) {
+    if (requiresOnboarding) {
+      activityManager.replaceActivityWith<LanguageSelectActivity>(onboardingMode);
+    } else {
+      activityManager.goHome();
+    }
+  } else if (requiresOnboarding) {
+    activityManager.replaceActivityWith<LanguageSelectActivity>(onboardingMode);
+  } else if (resume == BootResume::Silent && snapshotTarget == SilentRebootTarget::ReaderPreloadChineseFont) {
+#ifdef ENABLE_CHINESE_VERSION
+    continueChineseFontInstall(snapshotFontPointSize);
+#else
+    activityManager.goHome();
+#endif
+  } else if (resume == BootResume::Silent &&
+             (snapshotTarget == SilentRebootTarget::Reader ||
+              snapshotTarget == SilentRebootTarget::ReaderSuppressFontPrompt) &&
              !APP_STATE.openEpubPath.empty()) {
     activityManager.goToReader(APP_STATE.openEpubPath);
   } else if (resume == BootResume::Silent) {
@@ -547,6 +680,7 @@ void setup() {
              mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
     // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
     // crashed (indicated by readerActivityLoadCount > 0)
+    if (needsWakeRefresh) renderer.requestNextRefresh(HalDisplay::HALF_REFRESH);
     activityManager.goHome();
   } else {
     // Clear app state to avoid getting into a boot loop if the epub doesn't load
@@ -554,10 +688,19 @@ void setup() {
     APP_STATE.openEpubPath = "";
     APP_STATE.readerActivityLoadCount++;
     APP_STATE.saveToFile();
+    // Splashless wake leaves the retained sleep frame on the panel; without a
+    // clean first paint the reader shows the previous screen's residue (A4
+    // grayscale panels ghost worst). Mirror the Home branch's HALF refresh so
+    // reader resume also clears the retained frame.
+    if (needsWakeRefresh) renderer.requestNextRefresh(HalDisplay::HALF_REFRESH);
     activityManager.goToReader(path, allowFastInitialReaderRefresh);
   }
 
   if (resume == BootResume::Silent) {
+    if (postOtaBoot) {
+      // Apply the queued Home replacement before waiting for its first physical paint.
+      activityManager.loop();
+    }
     // Block until the first paint physically completes. refreshDisplay()
     // waits on the panel BUSY pin so when this returns the user can see the
     // new activity. Without the wait, an edge captured by gpio.update()
@@ -585,7 +728,24 @@ void loop() {
   static unsigned long lastMemPrint = 0;
 
   gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
-  gpio.update();
+  mappedInputManager.update();
+
+  if (activityManager.requiresExclusiveStorageLoop()) {
+    // USB Drive handed the raw SD card to the host. Do not run screenshots,
+    // sleep, shortcuts, or normal navigation while its filesystem is detached.
+    activityManager.loop();
+    if (activityManager.preventAutoSleep()) {
+      powerManager.setPowerSaving(false);
+      delay(10);
+    } else {
+      // No host is active, so a slower loop is safe. The activity itself times
+      // out the raw-storage handoff rather than entering deep sleep detached.
+      powerManager.setPowerSaving(true);
+      delay(50);
+    }
+    return;
+  }
+
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
   halClock.update();
 
@@ -625,6 +785,11 @@ void loop() {
   // that drives auto-downclock. Standby (a clock face) wants deep sleep blocked
   // but still benefits from the framework dropping CPU to LOW_POWER_FREQ.
 
+  if (wakePowerReleasePending && !gpio.isPressed(HalGPIO::BTN_POWER)) {
+    wakePowerReleasePending = false;
+    return;
+  }
+
   static bool screenshotButtonsReleased = true;
   static bool screenshotComboActive = false;
   if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.isPressed(HalGPIO::BTN_DOWN)) {
@@ -649,6 +814,17 @@ void loop() {
     screenshotComboActive = false;
   }
 
+  if (handleX4ProFrontlightDoubleClick()) return;
+
+#if FREEINK_CAP_TOUCH
+  mappedInputManager.setPowerConfirmClickFrame(false);
+  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM && BoardConfig::isX4Pro() &&
+      lastX4ProPowerClickAt != 0 && millis() - lastX4ProPowerClickAt > X4PRO_POWER_DOUBLE_CLICK_MS) {
+    lastX4ProPowerClickAt = 0;
+    mappedInputManager.setPowerConfirmClickFrame(true);
+  }
+#endif
+
   const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
   if (sleepTimeoutMs > 0 && !activityManager.preventAutoSleep() && millis() - lastActivityTime >= sleepTimeoutMs) {
     LOG_DBG("SLP", "Auto-sleep triggered after %lu ms of inactivity", sleepTimeoutMs);
@@ -663,10 +839,23 @@ void loop() {
     if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
       return;
     }
+    LOG_DBG("MAIN", "Power button held %lums, sleeping", gpio.getPowerButtonHeldTime());
     enterDeepSleep();
     // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
   }
+
+#if FREEINK_DEVICE_PAPERMONO
+  // Paper Mono reports the PMIC power button as a one-tick click, so the held
+  // path above cannot fire. With the default Ignore action, retain the normal
+  // power-button meaning and shut down; explicit alternate bindings still win.
+  if ((SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP ||
+       SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE) &&
+      millis() >= allowSleepAt && mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
+    enterDeepSleep();
+    return;
+  }
+#endif
 
   // Refresh screen when power button is short-pressed with FORCE_REFRESH setting.
   if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
@@ -683,10 +872,34 @@ void loop() {
   if (gpio.wasUsbStateChanged()) {
     activityManager.requestUpdate();
   }
+#ifndef CROSSPOINT_EMULATED
+  if (gpio.wasInputModalityChanged() && gpio.hasTouch() && UITheme::getInstance().hasMainTabs() &&
+      !activityManager.isReaderActivity()) {
+    activityManager.requestUpdate();
+  }
+#endif
 
   const unsigned long activityStartTime = millis();
+  const bool readerWasActive = activityManager.isReaderActivity();
   activityManager.loop();
+  const bool readerIsActive = activityManager.isReaderActivity();
   const unsigned long activityDuration = millis() - activityStartTime;
+
+  if (readerWasActive && !readerIsActive) {
+    if (!READING_STATS.saveToFile()) {
+      LOG_ERR("RST", "Failed to save reading stats after reader exit");
+    }
+    if (!ACHIEVEMENTS.saveToFile()) {
+      LOG_ERR("ACH", "Failed to save achievements after reader exit");
+    }
+  } else if (readerIsActive && (millis() - lastActivityTime) >= READING_STATS_CHECKPOINT_IDLE_MS &&
+             !activityManager.skipLoopDelay() && !activityManager.preventAutoSleep() &&
+             READING_STATS.shouldSaveCheckpoint()) {
+    RenderLock lock;
+    if (!READING_STATS.saveToFile()) {
+      LOG_ERR("RST", "Failed to save idle reading checkpoint");
+    }
+  }
 
   const unsigned long loopDuration = millis() - loopStartTime;
   if (loopDuration > maxLoopDuration) {

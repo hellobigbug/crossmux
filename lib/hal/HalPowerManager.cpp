@@ -10,10 +10,23 @@
 #include <cassert>
 
 #include "HalGPIO.h"
+#include "Waveshare397Power.h"
+
+#if FREEINK_DEVICE_PAPERMONO
+#include <M5Pm1.h>
+#endif
 
 HalPowerManager powerManager;  // Singleton instance
 
+// GPIO13 controls the X4 battery latch and the X3 SD power rail on the C3
+// Xteink boards. Other boards use it for unrelated signals, including the
+// X4 Pro display chip select.
+static constexpr gpio_num_t XTEINK_C3_GPIO13 = GPIO_NUM_13;
+
 void HalPowerManager::begin() {
+#if FREEINK_DEVICE_WAVESHARE_EPAPER_397
+  if (!Waveshare397Power::begin()) LOG_ERR("PWR", "AXP2101 initialization failed");
+#endif
   if (BoardConfig::ACTIVE.batteryAdc >= 0) {
     pinMode(BoardConfig::ACTIVE.batteryAdc, INPUT);
   }
@@ -23,6 +36,12 @@ void HalPowerManager::begin() {
 }
 
 void HalPowerManager::setPowerSaving(bool enabled) {
+#if FREEINK_DEVICE_MURPHY_M4
+  // Hardware validation found FT6336U touch unreliable after runtime CPU clock
+  // changes. The main loop still uses its 50 ms idle delay on this target.
+  (void)enabled;
+  return;
+#else
   if (normalFreq <= 0) {
     return;  // invalid state
   }
@@ -55,9 +74,13 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   }
 
   // Otherwise, no change needed
+#endif
 }
 
 void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
+#if FREEINK_DEVICE_WAVESHARE_EPAPER_397
+  Waveshare397Power::waitForPowerButtonRelease();
+#endif
 #ifdef ENABLE_SERIAL_LOG
   // Tear down HWCDC so the host sees a clean disconnect and the peripheral
   // doesn't hold power domains that interfere with USB-powered GPIO wake.
@@ -67,15 +90,39 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
 #endif
 
 #if !SOC_PM_SUPPORT_EXT1_WAKEUP
-  if (gpio.isXteinkDevice() && !gpio.deviceIsX3()) {
-    // X4 GPIO13 is connected to the battery latch MOSFET. Keeping it low powers
-    // the MCU off on battery, while the SDK wake source still handles USB power.
-    constexpr gpio_num_t GPIO_SPIWP = GPIO_NUM_13;
-    gpio_set_direction(GPIO_SPIWP, GPIO_MODE_OUTPUT);
-    gpio_set_level(GPIO_SPIWP, 0);
-    gpio_hold_en(GPIO_SPIWP);
+  if (gpio.isXteinkDevice()) {
+    // GPIO13 gates the battery MOSFET on both Xteink C3 boards; driving it low
+    // is the battery power-off (the SDK wake source still handles USB power).
+    // Release any surviving pad hold first: hold_en survives deep sleep via
+    // the SDK's deepSleep() (esp_sleep_config_gpio_isolate +
+    // gpio_deep_sleep_hold_en), and a held pad silently ignores the drive.
+    gpio_hold_dis(XTEINK_C3_GPIO13);
+    gpio_set_direction(XTEINK_C3_GPIO13, GPIO_MODE_OUTPUT);
+    gpio_set_level(XTEINK_C3_GPIO13, 0);
+    gpio_hold_en(XTEINK_C3_GPIO13);
   }
 #endif
+
+  // Hold every configured power-latch pin HIGH through deep sleep. These are
+  // keep-alive enables (the X4 Pro's master peripheral rail on GPIO1, the
+  // Sticky's PWR_HOLD/PWR_LOCK): deepSleep() isolates all pads
+  // (esp_sleep_config_gpio_isolate), so a latch without an armed hold loses its
+  // output driver and floats — on the X4 Pro the latch drops as soon as
+  // external power leaves (serial/pogo adapter unplugged), and the next power-
+  // button press cold-boots instead of fast-waking. holdPowerRails() asserted
+  // the latches at boot but arms no sleep hold; arm it here instead. Skips
+  // XTEINK_C3_GPIO13: it IS power.latch0 on the C3 Xteink boards, where the
+  // block above drives it LOW on purpose (battery power-off).
+  for (const int8_t pin : {BoardConfig::ACTIVE.power.latch0, BoardConfig::ACTIVE.power.latch1}) {
+    if (pin < 0 || static_cast<gpio_num_t>(pin) == XTEINK_C3_GPIO13) continue;
+    const auto g = static_cast<gpio_num_t>(pin);
+    // Release any surviving pad hold first: a held pad silently ignores the
+    // drive below (same trap as the GPIO13 block above).
+    gpio_hold_dis(g);
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, HIGH);
+    gpio_hold_en(g);
+  }
 
   // Cut the gated peripheral rails (touch/SD/EPD on boards like the Sticky) and
   // hold the enables off through deep sleep — otherwise the GT911 and SD card
@@ -84,14 +131,48 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   // button. Must run after display.deepSleep() so the panel controller gets its
   // deep-sleep command while its rail is still up (enterDeepSleep() in main.cpp
   // guarantees that ordering).
+  gpio.prepareForDeepSleep();
   freeink::PowerManager::powerDownRailsForSleep();
 
+#if FREEINK_DEVICE_WAVESHARE_EPAPER_397
+  if (Waveshare397Power::shutdown()) {
+    delay(500);  // Battery power normally disappears before this returns.
+  } else {
+    LOG_ERR("PWR", "AXP2101 shutdown failed; falling back to ESP deep sleep");
+  }
+  // A failed PMIC shutdown still needs a usable wake source. GPIO5 is the
+  // confirm key at runtime; it is also the fallback when USB keeps the MCU on.
+  constexpr int8_t FALLBACK_WAKE_PIN = 5;
+  pinMode(FALLBACK_WAKE_PIN, INPUT_PULLUP);
+  while (digitalRead(FALLBACK_WAKE_PIN) == LOW) delay(50);
+  freeink::PowerManager::armWakeOnPins(1ULL << FALLBACK_WAKE_PIN, true);
+  freeink::PowerManager::deepSleep();
+#elif FREEINK_DEVICE_PAPERMONO
+  // Its power button is behind the M5PM1 PMIC rather than an ESP GPIO, so
+  // normal GPIO deep sleep would have no wake source. Ask the PMIC to shut the
+  // device down; a button click then restarts it through a cold boot.
+  if (freeink::m5pm1::requestShutdown()) {
+    delay(1000);  // allow the PMIC firmware time to drop power
+  }
+#endif
+
+#if !FREEINK_DEVICE_WAVESHARE_EPAPER_397
   // Waits for the power button to be physically released (so holding it doesn't
   // immediately wake the device again), then arms the wake source and sleeps.
   freeink::PowerManager::deepSleepUntilPowerButton();
+#endif
 }
 
 uint16_t HalPowerManager::getBatteryPercentage() const {
+#if FREEINK_DEVICE_WAVESHARE_EPAPER_397
+  const unsigned long now = millis();
+  if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) return _batteryCachedPercent;
+  _batteryLastPollMs = now;
+  uint16_t percent = 0;
+  if (Waveshare397Power::readBatteryPercentage(percent)) _batteryCachedPercent = percent;
+  return _batteryCachedPercent;
+#endif
+
   static const BatteryMonitor battery;
   if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
     const unsigned long now = millis();

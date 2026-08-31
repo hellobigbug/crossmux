@@ -1,13 +1,20 @@
 #pragma once
 #include <HalStorage.h>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
 #include "Block.h"
+#include "Epub/converters/ImageToFramebufferDecoder.h"
 
 class ImageBlock final : public Block {
  public:
+  enum class PixelCachePolicy : uint8_t {
+    LoadIntoRam,
+    Stream,
+  };
+
   ImageBlock(const std::string& imagePath, const std::string& srcPath, int16_t width, int16_t height);
   ~ImageBlock() override = default;
 
@@ -18,6 +25,7 @@ class ImageBlock final : public Block {
   bool imageExists() const;
   bool hasValidCache() const;
   bool needsDecode() const;
+  bool ensureExtracted();
   void renderPlaceholder(GfxRenderer& renderer, int x, int y) const;
   static void clearSessionRenderFailures();
 
@@ -40,6 +48,8 @@ class ImageBlock final : public Block {
   bool isEmpty() override { return false; }
 
   void render(GfxRenderer& renderer, const int x, const int y);
+  bool render(GfxRenderer& renderer, int x, int y, PixelCachePolicy cachePolicy);
+  bool cacheDecodedImage(GfxRenderer& renderer, int x, int y);
   bool serialize(HalFile& file);
   static std::unique_ptr<ImageBlock> deserialize(HalFile& file);
 
@@ -51,4 +61,6 @@ class ImageBlock final : public Block {
 
   static void* extractCtx;
   static ExtractFn extractFn;
+
+  bool renderInternal(GfxRenderer& renderer, int x, int y, PixelCachePolicy cachePolicy, DecodeOutput output);
 };

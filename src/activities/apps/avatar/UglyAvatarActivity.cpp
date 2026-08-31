@@ -3,17 +3,27 @@
 #include <Arduino.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <Render.h>
 #include <esp_system.h>
 
+#include "activities/apps/GameUi.h"
 #include "components/UITheme.h"
 #include "util/ScreenshotUtil.h"
 
 void UglyAvatarActivity::onEnter() {
   Activity::onEnter();
   LOG_DBG("AVATAR", "onEnter free heap=%u", static_cast<unsigned>(ESP.getFreeHeap()));
-  gen_ = std::make_unique<avatar::AvatarGenerator>();
-  data_ = std::make_unique<avatar::AvatarData>();
+  gen_ = makeUniqueNoThrow<avatar::AvatarGenerator>();
+  data_ = makeUniqueNoThrow<avatar::AvatarData>();
+  if (!gen_ || !data_) {
+    LOG_ERR("AVATAR", "OOM: generator=%u data=%u", static_cast<unsigned>(sizeof(avatar::AvatarGenerator)),
+            static_cast<unsigned>(sizeof(avatar::AvatarData)));
+    gen_.reset();
+    data_.reset();
+    activityManager.goToApps();
+    return;
+  }
   regenerate();
 }
 
@@ -35,6 +45,20 @@ void UglyAvatarActivity::regenerate() {
 void UglyAvatarActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     activityManager.goToApps();
+    return;
+  }
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect saveButton =
+      gameTouchActionRect(renderer.getScreenWidth(), renderer.getScreenHeight(), metrics.contentSidePadding,
+                          metrics.menuSpacing, metrics.menuRowHeight, 1, 2);
+  if (mappedInput.wasTapInRect(saveButton.x, saveButton.y, saveButton.width, saveButton.height)) {
+    onSave();
+    return;
+  }
+  int touchX = 0;
+  int touchY = 0;
+  if (mappedInput.wasScreenTapped(touchX, touchY)) {
+    regenerate();
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -88,11 +112,23 @@ void UglyAvatarActivity::render(RenderLock&&) {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_UGLY_AVATAR));
 
   const int viewportTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int viewportBottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const int touchActions = mappedInput.hasTouch() ? metrics.menuRowHeight + metrics.verticalSpacing : 0;
+  const int viewportBottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - touchActions;
   const avatar::ScreenRect viewport{metrics.contentSidePadding, viewportTop, pageWidth - 2 * metrics.contentSidePadding,
                                     viewportBottom - viewportTop};
 
   avatar::drawAvatar(renderer, *data_, viewport);
+
+  if (mappedInput.hasTouch()) {
+    GUI.drawActionButton(renderer,
+                         gameTouchActionRect(pageWidth, pageHeight, metrics.contentSidePadding, metrics.menuSpacing,
+                                             metrics.menuRowHeight, 0, 2),
+                         tr(STR_RANDOM));
+    GUI.drawActionButton(renderer,
+                         gameTouchActionRect(pageWidth, pageHeight, metrics.contentSidePadding, metrics.menuSpacing,
+                                             metrics.menuRowHeight, 1, 2),
+                         tr(STR_SAVE));
+  }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SAVE), "", tr(STR_RANDOM));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

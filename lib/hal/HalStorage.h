@@ -4,17 +4,34 @@
 #include <common/FsApiConstants.h>  // for oflag_t
 #include <freertos/semphr.h>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
 class HalFile;
 
+enum class UsbDriveState : uint8_t {
+  Unsupported,
+  WaitingForHost,
+  Connected,
+  Ejected,
+  Disconnected,
+  IoError,
+};
+
 class HalStorage {
  public:
   HalStorage();
   bool begin();
   bool ready() const;
+  bool getSpace(uint64_t& totalBytes, uint64_t& freeBytes);
+  // USB Drive exclusively owns the SD card while active. Callers must stop
+  // all filesystem work before beginUsbDrive(), then reboot after endUsbDrive().
+  bool beginUsbDrive();
+  bool disconnectUsbDriveHost();
+  void endUsbDrive();
+  UsbDriveState usbDriveState() const;
   std::vector<String> listFiles(const char* path = "/", int maxFiles = 200);
   // Read the entire file at `path` into a String. Returns empty string on failure.
   String readFile(const char* path);
@@ -47,12 +64,24 @@ class HalStorage {
 
   static HalStorage& getInstance() { return instance; }
 
-  class StorageLock;  // private class, used internally
+  // Public RAII guard that keeps the SD/SPI transaction serialization lock held
+  // for the duration of a scope. Downstream code can hold it across a whole
+  // multi-step read (exists + open + read + draw) so the main task cannot
+  // interleave SD access mid-transaction and corrupt SdFat's m_spiActive.
+  class StorageLock {
+   public:
+    StorageLock();
+    ~StorageLock();
+    StorageLock(const StorageLock&) = delete;
+    StorageLock& operator=(const StorageLock&) = delete;
+  };
 
  private:
   static HalStorage instance;
 
   bool initialized = false;
+  // Recursive because HalFile operations can re-enter storage wrappers while
+  // a long transaction guard is held by the same task.
   SemaphoreHandle_t storageMutex = nullptr;
 };
 
@@ -85,6 +114,7 @@ class HalFile : public Print {
   size_t position() const;
   int read(void* buf, size_t count);
   int read();  // read a single byte
+  size_t write(const uint8_t* buf, size_t count) override;
   size_t write(const void* buf, size_t count);
   size_t write(uint8_t b) override;
   bool rename(const char* newPath);

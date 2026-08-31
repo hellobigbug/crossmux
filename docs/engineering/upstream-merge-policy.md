@@ -1,7 +1,7 @@
 # Upstream-Merge Policy for `CLAUDE.md` / `.skills/SKILL.md`
 
 > How to resolve conflicts on the development guide when syncing upstream into
-> `main`. This is the rule the daily sync routine and any human resolver must
+> `main`. This is the rule the manual sync routine and any human resolver must
 > follow. Read it whenever `.skills/SKILL.md` appears in a sync PR's conflict list.
 
 ## The structural invariant
@@ -82,7 +82,7 @@ Canonical key for step 3 — keep this in sync with [`index.md`](index.md).
 | Build/monitor commands, crash playbook, verification checklist, CI | [testing-and-debugging.md](testing-and-debugging.md) |
 | Repo detection, git rules, branch naming, commit format, when to commit | [git-workflow.md](git-workflow.md) |
 | Cache structure, invalidation, format versioning | [cache-management.md](cache-management.md) |
-| `ENABLE_CHINESE_VERSION` build, embedded CJK fonts | [chinese-build.md](chinese-build.md) |
+| Unified content profiles, embedded CJK fonts | [chinese-build.md](chinese-build.md) |
 
 ## Hard rules
 

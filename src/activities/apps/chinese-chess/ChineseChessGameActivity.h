@@ -7,6 +7,7 @@
 #include "ChineseChessAI.h"
 #include "ChineseChessBoard.h"
 #include "ChineseChessStore.h"
+#include "components/OptionPopup.h"
 
 class ChineseChessGameActivity final : public Activity {
  public:
@@ -22,16 +23,15 @@ class ChineseChessGameActivity final : public Activity {
  private:
   enum class State : uint8_t { Playing, GameMenu, GameOver };
 
-  // Layout (Portrait 480×800).
+  // Portrait layout.
   static constexpr int CONTENT_X = 24;
   static constexpr int TITLE_BAR_H = 36;
   static constexpr int BOARD_AREA_Y = 60;
   static constexpr int BOARD_PITCH = 48;
-  static constexpr int BOARD_ORIGIN_X = (480 - BOARD_PITCH * (ChineseChessBoard::FILES - 1)) / 2;  // 40
   static constexpr int BOARD_ORIGIN_Y = BOARD_AREA_Y + 30;
   static constexpr int PIECE_RADIUS = 22;
   static constexpr int INFO_PANEL_Y = 602;
-  static constexpr int MODE_LINE_Y = 720;
+  static constexpr int INFO_PANEL_H = 60;
   static constexpr uint8_t MENU_ITEM_COUNT = 5;  // Resume / Undo / Resign / New Game / Exit
 
   // AI plays Black (player is Red, who moves first).
@@ -58,18 +58,18 @@ class ChineseChessGameActivity final : public Activity {
   bool aiThinkingArmed = false;
   bool aiThinkingShown = false;
 
-  uint8_t menuSel = 0;
+  OptionPopup gameMenu;
 
   bool statsRecorded = false;
   bool resignedFlag = false;
   ChineseChessBoard::Side resignWinner = ChineseChessBoard::Side::Red;
 
   // Geometry helpers
+  int boardOriginX() const;
   void cellXY(uint8_t r, uint8_t c, int* x, int* y) const;
 
   // Drawing
   void renderPlaying();
-  void renderGameMenu();
   void renderGameOver();
   void drawTitleBar();
   void drawBoard();

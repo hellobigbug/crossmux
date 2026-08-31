@@ -43,6 +43,14 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
                      const std::vector<uint16_t>& focusSuffixX, const BlockStyle& blockStyle,
                      std::vector<std::string> rubyTexts)
     : blockStyle(blockStyle), rubyTexts(std::move(rubyTexts)) {
+  // Same invariant as deserialize(): a block never holds an all-empty rubyTexts, so a
+  // ruby-less line costs nothing beyond its arena. The layout engine hands one over for
+  // every line it extracts, ruby or not; release it here rather than carrying it for the
+  // block's lifetime. Move-assigning an empty vector frees the buffer (clear() would not).
+  if (!hasRuby()) {
+    this->rubyTexts = std::vector<std::string>{};
+  }
+
   // Focus annotations are optional: empty vectors mean no word in this block has a split.
   // When present, they must be sized in lockstep with words[].
   const bool hasFocus = !focusBoundary.empty();
@@ -129,81 +137,31 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
   const int ascender = renderer.getFontAscenderSize(fontId);
   const int rubyShift = hasRubyText ? (ascender / 2) : 0;
 
-  // Resolve ruby collisions left-to-right to prevent adjacent ruby texts from overlapping
+  // Resolve ruby positions. Layout (extractLine) has already reserved extraStartOffset on the
+  // left and extraEndOffset on the right, so the centered rubyX is always within the page margins.
   struct RubyDrawInfo {
     int x;
-    int width;
     std::string text;
     BidiUtils::BidiBaseDir baseDir;
   };
-  std::vector<int> wordShiftArr;
   std::vector<RubyDrawInfo> rubies;
   if (hasRubyText) {
-    wordShiftArr.resize(numWords, 0);
     rubies.resize(numWords);
-    int accumulatedShift = 0;
-    int lastEnd = -9999;
     for (uint16_t i = 0; i < numWords; i++) {
-      wordShiftArr[i] = accumulatedShift;
       if (i < rubyTexts.size() && !rubyTexts[i].empty() && (wordStyle(i) & EpdFontFamily::RUBY_CONTINUE) == 0) {
-        // Find the group size (how many words are part of this ruby annotation)
         int groupWordCount = 1;
         while (i + groupWordCount < numWords && (wordStyle(i + groupWordCount) & EpdFontFamily::RUBY_CONTINUE) != 0) {
           groupWordCount++;
         }
-
-        // Compute actual width for the group
         int groupActualWidth = 0;
         for (int k = 0; k < groupWordCount; ++k) {
           groupActualWidth += renderer.getTextAdvanceX(fontId, wordText(i + k), wordStyle(i + k));
         }
-
-        const char* word = wordText(i);
-        const int leaderWordX = xposArr[i] + x;
-        const int leaderWordX_shifted = leaderWordX + accumulatedShift;
-        const auto baseDir =
-            static_cast<BidiUtils::BidiBaseDir>(BidiUtils::detectParagraphLevel(word, blockStyle.isRtl ? 1 : 0));
         const int rubyWidth = renderer.getTextAdvanceX(fontId, rubyTexts[i].c_str(), EpdFontFamily::SUP);
-        const int screenWidth = renderer.getScreenWidth();
-
-        int rubyX = 0;
-        int groupDrawX = 0;
-        if (rubyWidth > groupActualWidth) {
-          rubyX = leaderWordX_shifted - (rubyWidth - groupActualWidth) / 2;
-          if (i == 0) {
-            rubyX = std::max(leaderWordX_shifted, rubyX);
-          }
-          if (rubyX < lastEnd) {
-            rubyX = lastEnd;
-          }
-          groupDrawX = rubyX + (rubyWidth - groupActualWidth) / 2;
-        } else {
-          groupDrawX = leaderWordX_shifted;
-          rubyX = groupDrawX + (groupActualWidth - rubyWidth) / 2;
-          if (i == 0) {
-            rubyX = std::max(leaderWordX_shifted, rubyX);
-          }
-          if (rubyX < lastEnd) {
-            const int push = lastEnd - rubyX;
-            rubyX = lastEnd;
-            groupDrawX += push;
-          }
-        }
-        rubyX = std::max(0, std::min(rubyX, screenWidth - rubyWidth));
-        // Keep groupDrawX aligned if rubyX was clamped by screen edges
-        if (rubyWidth > groupActualWidth) {
-          groupDrawX = rubyX + (rubyWidth - groupActualWidth) / 2;
-        }
-
-        rubies[i] = {rubyX, rubyWidth, rubyTexts[i], baseDir};
-        lastEnd = rubyX + rubyWidth;
-
-        // Propagate shift to all words in the group and subsequent words
-        const int groupShift = groupDrawX - leaderWordX;
-        accumulatedShift = groupShift;
-        for (int k = 0; k < groupWordCount; ++k) {
-          wordShiftArr[i + k] = accumulatedShift;
-        }
+        const int leaderWordX = xposArr[i] + x;
+        const auto baseDir =
+            static_cast<BidiUtils::BidiBaseDir>(BidiUtils::detectParagraphLevel(wordText(i), blockStyle.isRtl ? 1 : 0));
+        rubies[i] = {leaderWordX - (rubyWidth - groupActualWidth) / 2, rubyTexts[i], baseDir};
         i += groupWordCount - 1;
       }
     }
@@ -260,7 +218,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
       wordY += ascender / 4;
     }
 
-    const int drawX = wordX + (hasRubyText ? wordShiftArr[i] : 0);
+    const int drawX = wordX;
 
     if (boundary > 0) {
       // Focus split: draw bold prefix, then the regular suffix at a pre-computed x offset.
@@ -383,12 +341,14 @@ bool TextBlock::serialize(HalFile& file) const {
 }
 
 std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
-  uint16_t wc;
-  uint8_t hasFocus;
-  uint16_t textBytes;
-  serialization::readPod(file, wc);
-  serialization::readPod(file, hasFocus);
-  serialization::readPod(file, textBytes);
+  uint16_t wc = 0;
+  uint8_t hasFocus = 0;
+  uint16_t textBytes = 0;
+  if (!serialization::readPod(file, wc) || !serialization::readPod(file, hasFocus) ||
+      !serialization::readPod(file, textBytes)) {
+    LOG_ERR("TXB", "Deserialization failed: truncated header");
+    return nullptr;
+  }
 
   // Sanity checks: cap the arena allocation and reject impossible geometry
   // (every word carries at least its NUL terminator).
@@ -401,7 +361,8 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
     return nullptr;
   }
 
-  std::unique_ptr<TextBlock> block(new (std::nothrow) TextBlock());
+  // Construct here because the deserialization-only constructor is private.
+  auto block = std::unique_ptr<TextBlock>(new (std::nothrow) TextBlock());
   if (!block) {
     LOG_ERR("TXB", "OOM: TextBlock");
     return nullptr;
@@ -440,29 +401,43 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
     }
   }
 
-  // Ruby text data
-  std::vector<std::string> rubyTexts(wc);
-  for (auto& rt : rubyTexts) {
-    serialization::readString(file, rt);
+  // Ruby text data. Ruby is a CJK feature, so for nearly every book every entry here
+  // is the empty string. Materializing the vector regardless costs wordCount * 24 bytes
+  // (sizeof(std::string)) plus a heap block per line, held for as long as the page is
+  // resident -- several KB of DRAM on a full page, none of it ever read. An empty
+  // rubyTexts is already the "no ruby" representation: hasRuby() reports false and every
+  // other reader is guarded by `i < rubyTexts.size()`, so allocate lazily and only once a
+  // non-empty annotation actually shows up.
+  //
+  // `scratch` is reused across words: readString() resizes it to the incoming length and
+  // overwrites every byte, so a moved-from value carries nothing into the next iteration.
+  std::string scratch;
+  for (uint16_t i = 0; i < wc; i++) {
+    if (!serialization::readString(file, scratch, serialization::MAX_TEXT_BYTES)) {
+      LOG_ERR("TXB", "Deserialization failed: truncated or oversized ruby text");
+      return nullptr;
+    }
+    if (scratch.empty()) continue;
+    if (block->rubyTexts.empty()) {
+      block->rubyTexts.resize(wc);
+    }
+    block->rubyTexts[i] = std::move(scratch);
   }
-  block->rubyTexts = std::move(rubyTexts);
 
   // Style (alignment + margins/padding/indent)
   BlockStyle& blockStyle = block->blockStyle;
-  serialization::readPod(file, blockStyle.alignment);
-  serialization::readPod(file, blockStyle.textAlignDefined);
-  serialization::readPod(file, blockStyle.marginTop);
-  serialization::readPod(file, blockStyle.marginBottom);
-  serialization::readPod(file, blockStyle.marginLeft);
-  serialization::readPod(file, blockStyle.marginRight);
-  serialization::readPod(file, blockStyle.paddingTop);
-  serialization::readPod(file, blockStyle.paddingBottom);
-  serialization::readPod(file, blockStyle.paddingLeft);
-  serialization::readPod(file, blockStyle.paddingRight);
-  serialization::readPod(file, blockStyle.textIndent);
-  serialization::readPod(file, blockStyle.textIndentDefined);
-  serialization::readPod(file, blockStyle.isRtl);
-  serialization::readPod(file, blockStyle.directionDefined);
+  if (!serialization::readPod(file, blockStyle.alignment) ||
+      !serialization::readPod(file, blockStyle.textAlignDefined) ||
+      !serialization::readPod(file, blockStyle.marginTop) || !serialization::readPod(file, blockStyle.marginBottom) ||
+      !serialization::readPod(file, blockStyle.marginLeft) || !serialization::readPod(file, blockStyle.marginRight) ||
+      !serialization::readPod(file, blockStyle.paddingTop) || !serialization::readPod(file, blockStyle.paddingBottom) ||
+      !serialization::readPod(file, blockStyle.paddingLeft) || !serialization::readPod(file, blockStyle.paddingRight) ||
+      !serialization::readPod(file, blockStyle.textIndent) ||
+      !serialization::readPod(file, blockStyle.textIndentDefined) || !serialization::readPod(file, blockStyle.isRtl) ||
+      !serialization::readPod(file, blockStyle.directionDefined)) {
+    LOG_ERR("TXB", "Deserialization failed: truncated block style");
+    return nullptr;
+  }
 
   return block;
 }

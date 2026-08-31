@@ -18,12 +18,11 @@ namespace {
 
 // Centralized font roles. All ≤16 pt so OMIT_LARGE_READER_FONTS builds work.
 constexpr int kStatusFont = UI_12_FONT_ID;             // title bar
-constexpr int kModalItemFont = UI_12_FONT_ID;          // game-menu modal rows
-constexpr int kModalHintFont = UI_10_FONT_ID;          // game-menu modal right-side hints
 constexpr int kHeroFont = NOTOSERIF_16_FONT_ID;        // end-screen big title
 constexpr int kStatValueFont = NOTOSANS_16_FONT_ID;    // end-screen stat columns
 constexpr int kNumberFontBig = NOTOSERIF_16_FONT_ID;   // cell digit (Easy/Medium)
 constexpr int kNumberFontSmall = NOTOSANS_12_FONT_ID;  // cell digit (Hard)
+constexpr unsigned long TOUCH_FLAG_HOLD_MS = 700;
 
 }  // namespace
 
@@ -246,10 +245,67 @@ void MinesweeperGameActivity::flushSave() {
 
 void MinesweeperGameActivity::enterGameMenu() {
   state = State::GameMenu;
-  menuSel = 0;
+  const bool isFlagged =
+      cursorR < board.rows && cursorC < board.cols && board.at(cursorR, cursorC).state == MinesweeperBoard::Flagged;
+  const char* options[MENU_ITEM_COUNT] = {
+      tr(STR_GAME_RESUME),
+      tr(STR_MINESWEEPER_TOGGLE_MODE),
+      isFlagged ? tr(STR_MINESWEEPER_UNFLAG_HERE) : tr(STR_MINESWEEPER_FLAG_HERE),
+      tr(STR_MINESWEEPER_USE_HINT),
+      tr(STR_MINESWEEPER_RESTART),
+      tr(STR_GAME_NEW_GAME),
+      tr(STR_GAME_EXIT),
+  };
+  gameMenu.show(tr(STR_GAME_GAME_MENU), options, MENU_ITEM_COUNT, 0,
+                [this](const int index) { runMenuItem(static_cast<uint8_t>(index)); });
 }
 
 void MinesweeperGameActivity::handleInputPlaying() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect modeButton =
+      gameTouchActionRect(renderer.getScreenWidth(), renderer.getScreenHeight(), metrics.contentSidePadding,
+                          metrics.menuSpacing, metrics.menuRowHeight, 0, 1);
+  int touchX = 0;
+  int touchY = 0;
+  if (mappedInput.wasScreenTouchDown(touchX, touchY)) {
+    int row = 0;
+    int column = 0;
+    const int size = cellSize();
+    if (gameGridCellFromPoint(
+            Rect{(renderer.getScreenWidth() - BOARD_W) / 2, BOARD_Y, board.cols * size, board.rows * size}, board.rows,
+            board.cols, touchX, touchY, row, column)) {
+      cursorR = static_cast<uint8_t>(row);
+      cursorC = static_cast<uint8_t>(column);
+      requestUpdate();
+    }
+    return;
+  }
+  if (mappedInput.wasScreenTapped(touchX, touchY)) {
+    if (touchX >= modeButton.x && touchX < modeButton.x + modeButton.width && touchY >= modeButton.y &&
+        touchY < modeButton.y + modeButton.height) {
+      flagMode = !flagMode;
+      scheduleSave();
+      requestUpdate();
+      return;
+    }
+    int row = 0;
+    int column = 0;
+    const int size = cellSize();
+    if (gameGridCellFromPoint(
+            Rect{(renderer.getScreenWidth() - BOARD_W) / 2, BOARD_Y, board.cols * size, board.rows * size}, board.rows,
+            board.cols, touchX, touchY, row, column)) {
+      cursorR = static_cast<uint8_t>(row);
+      cursorC = static_cast<uint8_t>(column);
+      if (mappedInput.getHeldTime() >= TOUCH_FLAG_HOLD_MS) {
+        doFlag();
+      } else {
+        doDig();
+      }
+      requestUpdate();
+      return;
+    }
+  }
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
     moveCursor(-1, 0);
     requestUpdate();
@@ -272,21 +328,8 @@ void MinesweeperGameActivity::handleInputPlaying() {
 }
 
 void MinesweeperGameActivity::handleInputGameMenu() {
-  if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
-      mappedInput.wasPressed(MappedInputManager::Button::Left)) {
-    menuSel = static_cast<uint8_t>((menuSel + MENU_ITEM_COUNT - 1) % MENU_ITEM_COUNT);
-    requestUpdate();
-  } else if (mappedInput.wasPressed(MappedInputManager::Button::Down) ||
-             mappedInput.wasPressed(MappedInputManager::Button::Right)) {
-    menuSel = static_cast<uint8_t>((menuSel + 1) % MENU_ITEM_COUNT);
-    requestUpdate();
-  } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    runMenuItem(menuSel);
-    requestUpdate();
-  } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    resumeFromMenu();
-    requestUpdate();
-  }
+  gameMenu.handleInput(mappedInput, [this] { requestUpdate(); });
+  if (!gameMenu.isActive() && state == State::GameMenu) resumeFromMenu();
 }
 
 void MinesweeperGameActivity::runMenuItem(uint8_t i) {
@@ -316,22 +359,31 @@ void MinesweeperGameActivity::runMenuItem(uint8_t i) {
     case 5: {  // New Game (same difficulty, new layout)
       const auto diff = difficulty;
       MinesweeperStore::clear();
-      activityManager.replaceActivity(std::make_unique<MinesweeperGameActivity>(renderer, mappedInput, diff, false));
+      activityManager.replaceActivityWith<MinesweeperGameActivity>(diff, false);
       return;
     }
     case 6:  // Exit to Minesweeper menu
       flushSave();
-      activityManager.replaceActivity(std::make_unique<MinesweeperMenuActivity>(renderer, mappedInput));
+      activityManager.replaceActivityWith<MinesweeperMenuActivity>();
       return;
   }
 }
 
 void MinesweeperGameActivity::handleInputEnd() {
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect again = gameTouchActionRect(renderer.getScreenWidth(), renderer.getScreenHeight(),
+                                         metrics.contentSidePadding, metrics.menuSpacing, metrics.menuRowHeight, 0, 2);
+  const Rect home = gameTouchActionRect(renderer.getScreenWidth(), renderer.getScreenHeight(),
+                                        metrics.contentSidePadding, metrics.menuSpacing, metrics.menuRowHeight, 1, 2);
+  if (mappedInput.wasTapInRect(again.x, again.y, again.width, again.height) ||
+      mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     const auto diff = difficulty;
-    activityManager.replaceActivity(std::make_unique<MinesweeperGameActivity>(renderer, mappedInput, diff, false));
-  } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    activityManager.replaceActivity(std::make_unique<MinesweeperMenuActivity>(renderer, mappedInput));
+    activityManager.replaceActivityWith<MinesweeperGameActivity>(diff, false);
+    return;
+  }
+  if (mappedInput.wasTapInRect(home.x, home.y, home.width, home.height) ||
+      mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    activityManager.replaceActivityWith<MinesweeperMenuActivity>();
   }
 }
 
@@ -345,7 +397,7 @@ void MinesweeperGameActivity::render(RenderLock&&) {
       break;
     case State::GameMenu:
       renderPlaying();
-      renderGameMenu();
+      if (gameMenu.processRender(renderer, mappedInput)) return;
       break;
     case State::Won:
       renderEnd(true);
@@ -361,12 +413,20 @@ void MinesweeperGameActivity::render(RenderLock&&) {
 void MinesweeperGameActivity::renderPlaying() {
   drawTitleBar();
   drawBoard();
+  if (mappedInput.hasTouch()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    GUI.drawActionButton(
+        renderer,
+        gameTouchActionRect(renderer.getScreenWidth(), renderer.getScreenHeight(), metrics.contentSidePadding,
+                            metrics.menuSpacing, metrics.menuRowHeight, 0, 1),
+        flagMode ? tr(STR_MINESWEEPER_MODE_FLAG) : tr(STR_MINESWEEPER_MODE_DIG), flagMode);
+  }
   drawFooter();
 }
 
 void MinesweeperGameActivity::drawTitleBar() {
   const int w = renderer.getScreenWidth();
-  renderer.drawLine(0, TITLE_BAR_H, w, TITLE_BAR_H, true);
+  renderer.drawLine(0, TITLE_BAR_H, w - 1, TITLE_BAR_H, true);
 
   const int textH = renderer.getTextHeight(kStatusFont);
   const int y = gameCenterY(TITLE_BAR_H, textH);
@@ -386,7 +446,7 @@ void MinesweeperGameActivity::drawTitleBar() {
 
 void MinesweeperGameActivity::drawBoard() {
   const int size = cellSize();
-  const int x0 = BOARD_X;
+  const int x0 = (renderer.getScreenWidth() - BOARD_W) / 2;
   const int y0 = BOARD_Y;
 
   // Cells. The cursor frame is drawn separately below so cell content
@@ -587,59 +647,19 @@ void MinesweeperGameActivity::renderEnd(bool won) {
   }
   drawStatCol(2, tr(STR_MINESWEEPER_COMPLETED), totalBuf);
 
+  if (mappedInput.hasTouch()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    GUI.drawActionButton(
+        renderer,
+        gameTouchActionRect(renderer.getScreenWidth(), renderer.getScreenHeight(), metrics.contentSidePadding,
+                            metrics.menuSpacing, metrics.menuRowHeight, 0, 2),
+        tr(STR_MINESWEEPER_PLAY_AGAIN));
+    GUI.drawActionButton(
+        renderer,
+        gameTouchActionRect(renderer.getScreenWidth(), renderer.getScreenHeight(), metrics.contentSidePadding,
+                            metrics.menuSpacing, metrics.menuRowHeight, 1, 2),
+        tr(STR_GAME_HOME));
+  }
+
   drawFooter();
-}
-
-void MinesweeperGameActivity::renderGameMenu() {
-  // Compact modal sized for English; MENU_ITEM_COUNT rows × rowH + title.
-  constexpr int titleH = 28;
-  constexpr int rowH = 32;
-  const int w = 340;
-  const int h = titleH + rowH * MENU_ITEM_COUNT + 4;
-  const int x = (renderer.getScreenWidth() - w) / 2;
-  const int y = (renderer.getScreenHeight() - h) / 2;
-
-  renderer.fillRect(x, y, w, h, false);
-  renderer.drawRect(x, y, w, h, 2, true);
-
-  const int titleTextH = renderer.getTextHeight(kModalItemFont);
-  renderer.fillRect(x + 2, y + titleH, w - 4, 1, true);
-  renderer.drawText(kModalItemFont, x + 12, y + gameCenterY(titleH, titleTextH), tr(STR_GAME_GAME_MENU));
-
-  // Item 2 label changes based on current cell state.
-  const bool isFlagged =
-      (cursorR < board.rows && cursorC < board.cols && board.at(cursorR, cursorC).state == MinesweeperBoard::Flagged);
-  const char* flagItemLabel = isFlagged ? tr(STR_MINESWEEPER_UNFLAG_HERE) : tr(STR_MINESWEEPER_FLAG_HERE);
-
-  const char* labels[MENU_ITEM_COUNT] = {
-      tr(STR_GAME_RESUME),         tr(STR_MINESWEEPER_TOGGLE_MODE), flagItemLabel,     tr(STR_MINESWEEPER_USE_HINT),
-      tr(STR_MINESWEEPER_RESTART), tr(STR_GAME_NEW_GAME),           tr(STR_GAME_EXIT),
-  };
-
-  // Right-side hints.
-  const char* hintMode = flagMode ? tr(STR_MINESWEEPER_MODE_FLAG) : tr(STR_MINESWEEPER_MODE_DIG);
-  char hintHint[16];
-  if (hintsLeft > 0) {
-    snprintf(hintHint, sizeof(hintHint), tr(STR_MINESWEEPER_HINTS_LEFT), static_cast<int>(hintsLeft));
-  } else {
-    snprintf(hintHint, sizeof(hintHint), "%s", tr(STR_MINESWEEPER_NO_HINTS));
-  }
-  const char* hints[MENU_ITEM_COUNT] = {"", hintMode, "", hintHint, "", "", tr(STR_GAME_HOME)};
-
-  const int itemTextH = renderer.getTextHeight(kModalItemFont);
-  const int hintTextH = renderer.getTextHeight(kModalHintFont);
-  const int firstY = y + titleH;
-
-  for (int i = 0; i < MENU_ITEM_COUNT; i++) {
-    const int rowY = firstY + i * rowH;
-    const bool inverted = (i == menuSel);
-    if (inverted) {
-      renderer.fillRect(x + 1, rowY, w - 2, rowH, true);
-    }
-    renderer.drawText(kModalItemFont, x + 12, rowY + gameCenterY(rowH, itemTextH), labels[i], !inverted);
-    if (hints[i] && hints[i][0] != '\0') {
-      const int hw = renderer.getTextWidth(kModalHintFont, hints[i]);
-      renderer.drawText(kModalHintFont, x + w - 12 - hw, rowY + gameCenterY(rowH, hintTextH) + 2, hints[i], !inverted);
-    }
-  }
 }

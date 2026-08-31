@@ -77,7 +77,8 @@ OPDS server.
 
 ## Web Interface
 
-The browser UI has four primary pages.
+The browser UI has four primary pages. It serves Simplified-Chinese HTML when
+the current device UI language is `ZH_CN`; every other language uses English.
 
 ### Home
 

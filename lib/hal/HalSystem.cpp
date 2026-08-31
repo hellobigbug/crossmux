@@ -1,19 +1,28 @@
 #include "HalSystem.h"
 
+#include <BoardConfig.h>
+
 #include <string>
 
 #include "Arduino.h"
 #include "HalStorage.h"
 #include "Logging.h"
+#include "driver/temperature_sensor.h"
 #include "esp_debug_helpers.h"
+#include "esp_mac.h"
 #include "esp_private/esp_cpu_internal.h"
 #include "esp_private/esp_system_attr.h"
 #include "esp_private/panic_internal.h"
+#include "esp_timer.h"
 
 #define MAX_PANIC_STACK_DEPTH 32
+#define PANIC_CAPTURE_MAGIC 0x50414E49u
 
 RTC_NOINIT_ATTR char panicMessage[256];
 RTC_NOINIT_ATTR HalSystem::StackFrame panicStack[MAX_PANIC_STACK_DEPTH];
+// RTC_NOINIT is uninitialized on cold boot, so only this exact marker proves a
+// panic diagnostic was captured before the reset.
+RTC_NOINIT_ATTR volatile uint32_t panicCaptureMarker;
 
 extern "C" {
 
@@ -29,6 +38,7 @@ void IRAM_ATTR __wrap_panic_abort(const char* message) {
     panicMessage[i] = message[i];
   }
   panicMessage[i] = '\0';
+  panicCaptureMarker = PANIC_CAPTURE_MAGIC;
 
   __real_panic_abort(message);
 }
@@ -68,6 +78,7 @@ void IRAM_ATTR __wrap_panic_print_backtrace(const void* frame, int core) {
       break;
     }
   }
+  panicCaptureMarker = PANIC_CAPTURE_MAGIC;
 
   __real_panic_print_backtrace(frame, core);
 #endif
@@ -77,9 +88,8 @@ void IRAM_ATTR __wrap_panic_print_backtrace(const void* frame, int core) {
 namespace HalSystem {
 
 void begin() {
-  // This is mostly for the first boot, we need to initialize the panic info and logs to empty state
-  // If we reboot from a panic state, we want to keep the panic info until we successfully dump it to the SD card, use
-  // `clearPanic()` to clear it after dumping
+  // On a panic reboot, preserve diagnostics until checkPanic() has tried to write them to the SD card.
+  // Ordinary boots clear any stale retained diagnostics.
   if (!isRebootFromPanic()) {
     clearPanic();
   } else {
@@ -98,9 +108,16 @@ void checkPanic() {
     auto panicInfo = getPanicInfo(true);
     auto file = Storage.open("/crash_report.txt", O_WRITE | O_CREAT | O_TRUNC);
     if (file) {
-      file.write(panicInfo.c_str(), panicInfo.size());
+      const size_t written = file.write(panicInfo.c_str(), panicInfo.size());
       file.close();
-      LOG_INF("SYS", "Dumped panic info to SD card");
+      if (written == panicInfo.size()) {
+        // Keep the crash data for CrashActivity, but mark it consumed so a
+        // later watchdog reset cannot be mistaken for this panic.
+        panicCaptureMarker = 0;
+        LOG_INF("SYS", "Dumped panic info to SD card");
+      } else {
+        LOG_ERR("SYS", "Failed to write complete crash report (%zu of %zu bytes)", written, panicInfo.size());
+      }
     } else {
       LOG_ERR("SYS", "Failed to open crash_report.txt for writing");
     }
@@ -108,11 +125,70 @@ void checkPanic() {
 }
 
 void clearPanic() {
+  panicCaptureMarker = 0;
   panicMessage[0] = '\0';
   for (size_t i = 0; i < MAX_PANIC_STACK_DEPTH; i++) {
     panicStack[i].sp = 0;
   }
   clearLastLogs();
+}
+
+const char* getDeviceModel() { return BoardConfig::ACTIVE.name; }
+
+bool getDeviceId(DeviceId& out) {
+  out.fill(0);
+  if (esp_efuse_mac_get_default(out.data()) != ESP_OK) {
+    LOG_ERR("SYS", "Failed to read eFuse device ID");
+    return false;
+  }
+  return true;
+}
+
+bool getWifiStationMac(DeviceId& out) {
+  out.fill(0);
+  if (esp_read_mac(out.data(), ESP_MAC_WIFI_STA) != ESP_OK) {
+    LOG_ERR("SYS", "Failed to read Wi-Fi station MAC address");
+    return false;
+  }
+  return true;
+}
+
+bool getChipTemperatureCelsius(float& out) {
+  out = 0.0f;
+  temperature_sensor_handle_t sensor = nullptr;
+  const temperature_sensor_config_t config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+
+  // ESP-IDF owns two short-lived allocations here (about 112 bytes of payload);
+  // its opaque handle has no supported stack/static alternative.
+  if (temperature_sensor_install(&config, &sensor) != ESP_OK) {
+    LOG_ERR("SYS", "Failed to install chip temperature sensor");
+    return false;
+  }
+  if (temperature_sensor_enable(sensor) != ESP_OK) {
+    LOG_ERR("SYS", "Failed to enable chip temperature sensor");
+    if (temperature_sensor_uninstall(sensor) != ESP_OK) {
+      LOG_ERR("SYS", "Failed to uninstall chip temperature sensor after enable failure");
+    }
+    return false;
+  }
+
+  const bool readOk = temperature_sensor_get_celsius(sensor, &out) == ESP_OK;
+  if (!readOk) LOG_ERR("SYS", "Failed to read chip temperature");
+
+  const bool disableOk = temperature_sensor_disable(sensor) == ESP_OK;
+  if (!disableOk) LOG_ERR("SYS", "Failed to disable chip temperature sensor");
+
+  const bool uninstallOk = temperature_sensor_uninstall(sensor) == ESP_OK;
+  if (!uninstallOk) LOG_ERR("SYS", "Failed to uninstall chip temperature sensor");
+
+  return readOk && disableOk && uninstallOk;
+}
+
+uint64_t getUptimeSeconds() { return static_cast<uint64_t>(esp_timer_get_time()) / 1000000ULL; }
+
+HeapInfo getHeapInfo() {
+  return {static_cast<uint32_t>(ESP.getFreeHeap()), static_cast<uint32_t>(ESP.getHeapSize()),
+          static_cast<uint32_t>(ESP.getMaxAllocHeap())};
 }
 
 std::string getPanicInfo(bool full) {
@@ -148,7 +224,13 @@ std::string getPanicInfo(bool full) {
 
 bool isRebootFromPanic() {
   const auto resetReason = esp_reset_reason();
-  return resetReason == ESP_RST_PANIC || resetReason == ESP_RST_CPU_LOCKUP;
+  if (resetReason == ESP_RST_PANIC || resetReason == ESP_RST_CPU_LOCKUP) {
+    return true;
+  }
+
+  const bool watchdogReset =
+      resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_TASK_WDT || resetReason == ESP_RST_WDT;
+  return watchdogReset && panicCaptureMarker == PANIC_CAPTURE_MAGIC;
 }
 
 }  // namespace HalSystem

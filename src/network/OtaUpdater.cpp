@@ -5,44 +5,81 @@
 // ip4_addr.h unless seen first. Pin this order; clang-format would otherwise sort
 // the local header last and break the build.
 #include "HttpDownloader.h"
+#include <HalSystem.h>
 #include <Logging.h>
 #include <ReleaseJsonParser.h>
 #include <esp_ota_ops.h>
 #include <esp_wifi.h>
 // clang-format on
 
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
 #include <string>
+#include <string_view>
+
+#include "CrossMuxEndpoints.h"
+#include "FirmwareBoardTag.h"
+#include "FirmwareFlasher.h"
 
 namespace {
-// OTA manifest endpoint. The global build uses crossmux.com; the Chinese build
-// (ENABLE_CHINESE_VERSION) uses crossmux.yunhug.com, the yunhug-hosted domain
-// with a more reliable mainland-China path. Either way the web proxy picks the
-// right release asset for this build's variant (firmware.bin for the global
-// build, firmware-cn.bin for the Chinese build) and re-exposes it as a minimal
-// GitHub-release-shaped JSON whose single asset is always named
-// "firmware.bin" — that's the literal ReleaseJsonParser matches on.
+constexpr std::string_view nightlyTagPrefix = "nightly-";
+constexpr size_t nightlyShaLength = 7;
+
+constexpr bool isSameNightlyBuild(const std::string_view currentVersion, const std::string_view latestTag) {
+  if (!latestTag.starts_with(nightlyTagPrefix) || latestTag.size() != nightlyTagPrefix.size() + nightlyShaLength) {
+    return false;
+  }
+
+  const std::string_view latestSha = latestTag.substr(nightlyTagPrefix.size());
+  const bool validSha = std::all_of(latestSha.begin(), latestSha.end(), [](const char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+  });
+  if (!validSha) return false;
+
+  const size_t separator = currentVersion.rfind('+');
+  return separator != std::string_view::npos && currentVersion.substr(separator + 1) == latestSha;
+}
+
+static_assert(isSameNightlyBuild("1.5.2-rc+5064d90", "nightly-5064d90"));
+static_assert(isSameNightlyBuild("1.5.2-cn-rc+5064d90", "nightly-5064d90"));
+static_assert(!isSameNightlyBuild("1.5.2-rc+5064d90", "nightly-1234567"));
+static_assert(!isSameNightlyBuild("1.5.2", "nightly-5064d90"));
+static_assert(!isSameNightlyBuild("1.5.2-rc+5064d90", "nightly"));
+
+// The locked content profile supplies the OTA host and release asset variant.
+// The web proxy re-exposes it as a minimal
+// GitHub-release-shaped JSON whose single asset is always named "firmware.bin"
+// — that's the literal ReleaseJsonParser matches on.
 //
 // Going through the web instead of api.github.com directly avoids the
 // unauthenticated 60 req/hr/IP rate limit and the unstable mainland-China
 // path to api.github.com.
-constexpr char latestReleaseUrl[] =
-#ifdef ENABLE_CHINESE_VERSION
-    "https://crossmux.yunhug.com/api/ota/manifest?variant=cn";
-#else
-    "https://crossmux.com/api/ota/manifest?variant=global";
-#endif
+constexpr size_t releaseUrlCapacity = 192;
+static_assert(releaseUrlCapacity < 256);
 }  // namespace
 
-OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
-  LOG_DBG("OTA", "Checking for update (current: %s)", CROSSPOINT_VERSION);
+OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate(const Channel requestedChannel) {
+  channel = requestedChannel;
+  char releaseUrl[releaseUrlCapacity];
+  const char* channelQuery = channel == Channel::Nightly ? "&channel=nightly" : "";
+  const int releaseUrlLength =
+      snprintf(releaseUrl, sizeof(releaseUrl), CrossMuxEndpoints::OTA_MANIFEST_FORMAT, CrossMuxEndpoints::host(),
+               CrossMuxEndpoints::otaVariant(), channelQuery, HalSystem::getDeviceModel());
+  if (releaseUrlLength < 0 || static_cast<size_t>(releaseUrlLength) >= sizeof(releaseUrl)) {
+    LOG_ERR("OTA", "Release URL exceeds %zu bytes", sizeof(releaseUrl));
+    return INTERNAL_UPDATE_ERROR;
+  }
+  LOG_DBG("OTA", "Checking %s channel (current: %s)", channel == Channel::Nightly ? "nightly" : "stable",
+          CROSSPOINT_VERSION);
 
   // Stream the ~32KB release JSON straight into the parser as it arrives.
   // Buffering the whole body in a std::string would add a growing allocation
   // on top of the TLS session's heap during the fetch; with -fno-exceptions an
   // OOM there aborts. fetchUrl handles the configured secure GET transport,
   // redirects, and User-Agent (see HttpDownloader).
-  ReleaseJsonParser releaseParser;
-  const bool ok = HttpDownloader::fetchUrl(latestReleaseUrl, [&releaseParser](const uint8_t* data, size_t len) {
+  ReleaseJsonParser releaseParser(releaseNotes);
+  const bool ok = HttpDownloader::fetchUrl(releaseUrl, [&releaseParser](const uint8_t* data, size_t len) {
     releaseParser.feed(reinterpret_cast<const char*>(data), len);
     return true;
   });
@@ -53,6 +90,11 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
 
   LOG_DBG("OTA", "Parser results: tag=%s firmware=%s", releaseParser.foundTag() ? "yes" : "no",
           releaseParser.foundFirmware() ? "yes" : "no");
+
+  if (releaseParser.foundUnsupportedChannel()) {
+    LOG_INF("OTA", "Selected update channel is not supported by this device");
+    return UNSUPPORTED_CHANNEL;
+  }
 
   if (!releaseParser.foundTag()) {
     LOG_ERR("OTA", "No tag_name in release JSON");
@@ -69,16 +111,24 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   otaSize = releaseParser.getFirmwareSize();
   totalSize = otaSize;
   updateAvailable = true;
+  releaseNoteCount = releaseParser.getReleaseNoteCount();
 
-  LOG_DBG("OTA", "Found update: tag=%s size=%zu", latestVersion.c_str(), otaSize);
+  LOG_DBG("OTA", "Found update: tag=%s size=%zu notes=%zu", latestVersion.c_str(), otaSize, releaseNoteCount);
   LOG_DBG("OTA", "Firmware URL: %s", otaUrl.c_str());
   return OK;
 }
 
 bool OtaUpdater::isUpdateNewer() const {
-  if (!updateAvailable || latestVersion.empty() || latestVersion == CROSSPOINT_VERSION) {
+  if (!updateAvailable || latestVersion.empty()) {
     return false;
   }
+  switch (channel) {
+    case Channel::Stable:
+      break;
+    case Channel::Nightly:
+      return !isSameNightlyBuild(CROSSPOINT_VERSION, latestVersion);
+  }
+  if (latestVersion == CROSSPOINT_VERSION) return false;
 
   int currentMajor, currentMinor, currentPatch;
   int latestMajor, latestMinor, latestPatch;
@@ -149,7 +199,37 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   processedSize = 0;
   int lastReportedPct = -1;
   bool flashOk = true;
+  // The image streams in chunks; only the first bytes carry the header. Buffer
+  // the first 14 bytes so we can read chip_id (esp_image_header_t offset 12)
+  // and reject a wrong-MCU image before it overwrites the OTA partition.
+  uint8_t hdr[14];
+  size_t hdrLen = 0;
+  bool wrongChip = false;
+  board_tag::Scanner boardScanner;
+  bool wrongBoard = false;
   const bool fetchOk = HttpDownloader::fetchUrl(otaUrl, [&](const uint8_t* data, size_t len) {
+    if (hdrLen < sizeof(hdr)) {
+      const size_t take = std::min(len, sizeof(hdr) - hdrLen);
+      std::memcpy(hdr + hdrLen, data, take);
+      hdrLen += take;
+      if (hdrLen == sizeof(hdr)) {
+        uint16_t imageChip;
+        std::memcpy(&imageChip, hdr + 12, sizeof(imageChip));
+        const uint16_t deviceChip = firmware_flash::runningPartitionChipId();
+        if (deviceChip != 0xFFFF && imageChip != deviceChip) {
+          LOG_ERR("OTA", "wrong chip: image=0x%04X device=0x%04X", imageChip, deviceChip);
+          wrongChip = true;
+          return false;  // abort the transfer
+        }
+      }
+    }
+    boardScanner.feed(data, len);
+    if (boardScanner.mismatch()) {
+      LOG_ERR("OTA", "wrong board: image=%s device=%.*s", boardScanner.foundName(),
+              static_cast<int>(board_tag::boardNameLen()), board_tag::boardName());
+      wrongBoard = true;
+      return false;  // abort before selecting the incomplete image as bootable
+    }
     if (esp_ota_write(otaHandle, data, len) != ESP_OK) {
       flashOk = false;
       return false;  // abort the transfer
@@ -170,6 +250,12 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
 
   /* Return back to default power saving for WiFi in case of failing */
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+
+  if (wrongChip || wrongBoard) {
+    LOG_ERR("OTA", "Firmware install aborted: wrong device");
+    esp_ota_abort(otaHandle);
+    return WRONG_DEVICE_ERROR;
+  }
 
   if (!fetchOk || !flashOk) {
     LOG_ERR("OTA", "Firmware install failed (%s)", flashOk ? "download" : "flash write");

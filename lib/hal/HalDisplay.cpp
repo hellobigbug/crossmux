@@ -1,29 +1,5 @@
-#include <BoardConfig.h>
 #include <HalDisplay.h>
 #include <HalGPIO.h>
-#include <Logging.h>
-#include <driver/Ssd1677Driver.h>
-
-namespace {
-
-constexpr uint32_t X4_DISPLAY_SPI_HZ = 20'000'000;
-
-}  // namespace
-
-namespace freeink {
-
-const Ssd1677Config& crossPointX4Ssd1677Config() {
-  // The SDK retains this reference for the driver's lifetime. Static storage
-  // keeps it valid without allocating a second config on the heap.
-  static const Ssd1677Config config = []() {
-    Ssd1677Config tuned = ssd1677DefaultConfig();
-    tuned.fastSeqOverride = 0;  // Use the driver's incremental DU sequence (0x1C).
-    return tuned;
-  }();
-  return config;
-}
-
-}  // namespace freeink
 
 // Global HalDisplay instance
 HalDisplay display;
@@ -38,13 +14,10 @@ void HalDisplay::begin(bool seamless) {
   // Set X3-specific panel mode before initializing.
   if (gpio.deviceIsX3()) {
     einkDisplay.setDisplayX3();
-  } else {
-    // The SSD1677 supports a 20 MHz write clock. Raising the X4 from the SDK's
-    // conservative 5 MHz profile shortens the three full-plane transfers made
-    // by FAST single-buffer refreshes without changing the framebuffer strategy.
-    BoardConfig::ACTIVE.displaySpiHz = X4_DISPLAY_SPI_HZ;
-    LOG_INF("DSP", "X4 display: SPI=20 MHz, fast refresh=DU (0x1C)");
   }
+#if FREEINK_DEVICE_MURPHY_M4
+  einkDisplay.setMurphyM4Batch(gpio.murphyM4Batch());
+#endif
 
   einkDisplay.begin();
 
@@ -115,6 +88,12 @@ void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen
   einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);
 }
 
+void HalDisplay::setInverted(bool inverted) { einkDisplay.setInverted(inverted); }
+
+bool HalDisplay::toggleInverted() { return einkDisplay.toggleInverted(); }
+
+bool HalDisplay::isInverted() const { return einkDisplay.isInverted(); }
+
 void HalDisplay::deepSleep() { einkDisplay.deepSleep(); }
 
 uint8_t* HalDisplay::getFrameBuffer() const { return einkDisplay.getFrameBuffer(); }
@@ -162,6 +141,8 @@ void HalDisplay::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, ui
 }
 
 bool HalDisplay::supportsStripGrayscale() const { return einkDisplay.supportsStripGrayscale(); }
+
+bool HalDisplay::combinesGrayscaleBase() const { return einkDisplay.combinesGrayscaleBase(); }
 
 uint16_t HalDisplay::getDisplayWidth() const { return einkDisplay.getDisplayWidth(); }
 

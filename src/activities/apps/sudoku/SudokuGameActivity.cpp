@@ -22,8 +22,6 @@ constexpr int kBigDigitFont = NOTOSERIF_16_FONT_ID;   // fixed (given) digits + 
 constexpr int kUserDigitFont = NOTOSERIF_14_FONT_ID;  // user-input digits — smaller = thinner & lighter
 constexpr int kNotesFont = NOTOSANS_12_FONT_ID;       // 3×3 candidate notes
 constexpr int kStatusFont = UI_12_FONT_ID;            // title bar / mode line
-constexpr int kModalItemFont = UI_12_FONT_ID;         // game-menu modal rows
-constexpr int kModalHintFont = UI_10_FONT_ID;         // game-menu right-side hints
 constexpr int kHeroFont = NOTOSERIF_16_FONT_ID;       // win-screen "Solved!"
 constexpr int kStatValueFont = NOTOSANS_16_FONT_ID;   // win-screen stat columns
 
@@ -118,35 +116,36 @@ void SudokuGameActivity::resumeFromMenu() {
 }
 
 void SudokuGameActivity::handleInputWon() {
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect again = gameTouchActionRect(renderer.getScreenWidth(), renderer.getScreenHeight(),
+                                         metrics.contentSidePadding, metrics.menuSpacing, metrics.menuRowHeight, 0, 2);
+  const Rect home = gameTouchActionRect(renderer.getScreenWidth(), renderer.getScreenHeight(),
+                                        metrics.contentSidePadding, metrics.menuSpacing, metrics.menuRowHeight, 1, 2);
+  if (mappedInput.wasTapInRect(again.x, again.y, again.width, again.height) ||
+      mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     const auto diff = difficulty;
-    activityManager.replaceActivity(std::make_unique<SudokuGameActivity>(renderer, mappedInput, diff, false));
-  } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    activityManager.replaceActivity(std::make_unique<SudokuMenuActivity>(renderer, mappedInput));
+    activityManager.replaceActivityWith<SudokuGameActivity>(diff, false);
+    return;
+  }
+  if (mappedInput.wasTapInRect(home.x, home.y, home.width, home.height) ||
+      mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    activityManager.replaceActivityWith<SudokuMenuActivity>();
   }
 }
 
 void SudokuGameActivity::enterGameMenu() {
   state = State::GameMenu;
-  menuSel = 0;
+  const char* options[MENU_ITEM_COUNT] = {
+      tr(STR_GAME_RESUME),    tr(STR_SUDOKU_TOGGLE_NOTES), tr(STR_SUDOKU_USE_HINT), tr(STR_SUDOKU_CHECK_ERRORS),
+      tr(STR_SUDOKU_RESTART), tr(STR_GAME_NEW_GAME),       tr(STR_GAME_EXIT),
+  };
+  gameMenu.show(tr(STR_GAME_GAME_MENU), options, MENU_ITEM_COUNT, 0,
+                [this](const int index) { runMenuItem(static_cast<uint8_t>(index)); });
 }
 
 void SudokuGameActivity::handleInputGameMenu() {
-  if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
-      mappedInput.wasPressed(MappedInputManager::Button::Left)) {
-    menuSel = static_cast<uint8_t>((menuSel + MENU_ITEM_COUNT - 1) % MENU_ITEM_COUNT);
-    requestUpdate();
-  } else if (mappedInput.wasPressed(MappedInputManager::Button::Down) ||
-             mappedInput.wasPressed(MappedInputManager::Button::Right)) {
-    menuSel = static_cast<uint8_t>((menuSel + 1) % MENU_ITEM_COUNT);
-    requestUpdate();
-  } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    runMenuItem(menuSel);
-    requestUpdate();
-  } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    resumeFromMenu();
-    requestUpdate();
-  }
+  gameMenu.handleInput(mappedInput, [this] { requestUpdate(); });
+  if (!gameMenu.isActive() && state == State::GameMenu) resumeFromMenu();
 }
 
 void SudokuGameActivity::runMenuItem(uint8_t i) {
@@ -173,12 +172,12 @@ void SudokuGameActivity::runMenuItem(uint8_t i) {
     case 5: {  // New game (same difficulty)
       const auto diff = difficulty;
       SudokuStore::clear();
-      activityManager.replaceActivity(std::make_unique<SudokuGameActivity>(renderer, mappedInput, diff, false));
+      activityManager.replaceActivityWith<SudokuGameActivity>(diff, false);
       return;
     }
     case 6:  // Exit to Sudoku menu
       flushSave();
-      activityManager.replaceActivity(std::make_unique<SudokuMenuActivity>(renderer, mappedInput));
+      activityManager.replaceActivityWith<SudokuMenuActivity>();
       return;
   }
 }
@@ -214,6 +213,40 @@ void SudokuGameActivity::resetGame() {
 }
 
 void SudokuGameActivity::handleInputPlaying() {
+  int touchX = 0;
+  int touchY = 0;
+  const int gridX = (renderer.getScreenWidth() - GRID_SIZE_PX) / 2;
+  const int paletteX = (renderer.getScreenWidth() - PALETTE_W) / 2;
+  const auto updateTouchFocus = [&](const int x, const int y, const bool activate) {
+    int row = 0;
+    int column = 0;
+    if (gameGridCellFromPoint(Rect{gridX, GRID_Y, GRID_SIZE_PX, GRID_SIZE_PX}, 9, 9, x, y, row, column)) {
+      cursorR = static_cast<uint8_t>(row);
+      cursorC = static_cast<uint8_t>(column);
+      focus = Focus::Grid;
+      if (activate && !board.isFixed(cursorR, cursorC)) enterPaletteFocus();
+      requestUpdate();
+      return true;
+    }
+
+    const int relativeX = x - paletteX;
+    const int relativeY = y - PALETTE_Y;
+    if (relativeX < 0 || relativeY < 0) return false;
+    column = relativeX / (PALETTE_CELL_W + PALETTE_GAP);
+    row = relativeY / (PALETTE_CELL_H + PALETTE_GAP);
+    if (column >= 5 || row >= 2 || relativeX % (PALETTE_CELL_W + PALETTE_GAP) >= PALETTE_CELL_W ||
+        relativeY % (PALETTE_CELL_H + PALETTE_GAP) >= PALETTE_CELL_H) {
+      return false;
+    }
+    paletteIdx = static_cast<uint8_t>(row * 5 + column);
+    focus = Focus::Palette;
+    if (activate) exitPaletteFocus(true);
+    requestUpdate();
+    return true;
+  };
+  if (mappedInput.wasScreenTouchDown(touchX, touchY) && updateTouchFocus(touchX, touchY, false)) return;
+  if (mappedInput.wasScreenTapped(touchX, touchY) && updateTouchFocus(touchX, touchY, true)) return;
+
   if (focus == Focus::Grid) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
       moveCursor(-1, 0);
@@ -387,7 +420,7 @@ void SudokuGameActivity::render(RenderLock&&) {
       break;
     case State::GameMenu:
       renderPlaying();
-      renderGameMenu();
+      if (gameMenu.processRender(renderer, mappedInput)) return;
       break;
     case State::Won:
       renderWon();
@@ -399,22 +432,26 @@ void SudokuGameActivity::render(RenderLock&&) {
 
 void SudokuGameActivity::renderGenerating() {
   drawTitleBar();
-  const int h = renderer.getScreenHeight();
-  renderer.drawCenteredText(NOTOSANS_16_FONT_ID, h / 2 - 16, tr(STR_SUDOKU_GENERATING));
-  renderer.drawCenteredText(kStatusFont, h / 2 + 14, tr(STR_SUDOKU_GENERATING_HINT));
+  constexpr int gap = 12;
+  const int titleH = renderer.getTextHeight(NOTOSANS_16_FONT_ID);
+  const int hintH = renderer.getTextHeight(kStatusFont);
+  const int titleY = gameCenteredBlockY(TITLE_BAR_H, renderer.getScreenHeight(), titleH + gap + hintH);
+  renderer.drawCenteredText(NOTOSANS_16_FONT_ID, titleY, tr(STR_SUDOKU_GENERATING));
+  renderer.drawCenteredText(kStatusFont, titleY + titleH + gap, tr(STR_SUDOKU_GENERATING_HINT));
 }
 
 void SudokuGameActivity::renderPlaying() {
   drawTitleBar();
-  drawGrid(GRID_X, GRID_Y);
-  drawPalette(PALETTE_X, PALETTE_Y);
+  const int screenWidth = renderer.getScreenWidth();
+  drawGrid((screenWidth - GRID_SIZE_PX) / 2, GRID_Y);
+  drawPalette((screenWidth - PALETTE_W) / 2, PALETTE_Y);
   drawFooter();
 }
 
 void SudokuGameActivity::drawTitleBar() {
   const int w = renderer.getScreenWidth();
   // Bottom border at TITLE_BAR_H. 1px so plain drawLine is fine.
-  renderer.drawLine(0, TITLE_BAR_H, w, TITLE_BAR_H, true);
+  renderer.drawLine(0, TITLE_BAR_H, w - 1, TITLE_BAR_H, true);
 
   const int textH = renderer.getTextHeight(kStatusFont);
   const int y = gameCenterY(TITLE_BAR_H, textH);
@@ -582,23 +619,41 @@ void SudokuGameActivity::renderWon() {
   drawTitleBar();
   const int sw = renderer.getScreenWidth();
 
-  // Big title
-  const int titleY = 200;
-  renderer.drawCenteredText(kHeroFont, titleY, tr(STR_SUDOKU_SOLVED), true, EpdFontFamily::BOLD);
-
   // Subtitle: difficulty · time · errors
   char timeBuf[8];
   gameFormatElapsed(elapsedMs, timeBuf, sizeof(timeBuf));
   char sub[64];
   snprintf(sub, sizeof(sub), "%s · %s · %s %u/3", difficultyName(difficulty), timeBuf, tr(STR_SUDOKU_ERRORS),
            static_cast<unsigned>(mistakes));
-  renderer.drawCenteredText(kStatusFont, titleY + 36, sub);
-
-  // Three-column stats row.
   const int diffIdx = static_cast<int>(difficulty);
   const SudokuStats stats = SudokuStore::loadStats();
-  const int statsY = titleY + 100;
-  constexpr int statsH = 80;
+
+  char rateBuf[32];
+  const bool showRate = diffIdx >= 0 && diffIdx < 3 && stats.startedCount[diffIdx] > 0;
+  if (showRate) {
+    const int rate = (stats.completedCount[diffIdx] * 100) / stats.startedCount[diffIdx];
+    snprintf(rateBuf, sizeof(rateBuf), "%s %d%%", tr(STR_SUDOKU_WIN_RATE), rate);
+  }
+
+  constexpr int titleGap = 12;
+  constexpr int sectionGap = 36;
+  constexpr int statPadding = 16;
+  constexpr int statTextGap = 12;
+  constexpr int footnoteGap = 16;
+  const int titleH = renderer.getTextHeight(kHeroFont);
+  const int statusH = renderer.getTextHeight(kStatusFont);
+  const int valueH = renderer.getTextHeight(kStatValueFont);
+  const int statsH = statPadding + valueH + statTextGap + statusH + statPadding;
+  const int blockH = titleH + titleGap + statusH + sectionGap + statsH + (showRate ? footnoteGap + statusH : 0);
+  const int availableBottom = renderer.getScreenHeight() - UITheme::getInstance().getMetrics().buttonHintsHeight;
+  const int titleY = gameCenteredBlockY(TITLE_BAR_H, availableBottom, blockH);
+  const int subtitleY = titleY + titleH + titleGap;
+  const int statsY = subtitleY + statusH + sectionGap;
+
+  renderer.drawCenteredText(kHeroFont, titleY, tr(STR_SUDOKU_SOLVED), true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(kStatusFont, subtitleY, sub);
+
+  // Three-column stats row.
   const int sx = CONTENT_X;
   const int sw2 = sw - 2 * CONTENT_X;
   const int colW = sw2 / 3;
@@ -610,8 +665,8 @@ void SudokuGameActivity::renderWon() {
     const int cx = sx + col * colW;
     const int valW = renderer.getTextWidth(kStatValueFont, value);
     const int labW = renderer.getTextWidth(kStatusFont, label);
-    renderer.drawText(kStatValueFont, cx + (colW - valW) / 2, statsY + 28, value, true);
-    renderer.drawText(kStatusFont, cx + (colW - labW) / 2, statsY + 56, label, true);
+    renderer.drawText(kStatValueFont, cx + (colW - valW) / 2, statsY + statPadding, value, true);
+    renderer.drawText(kStatusFont, cx + (colW - labW) / 2, statsY + statPadding + valueH + statTextGap, label, true);
   };
 
   // Col 0: time.
@@ -636,63 +691,23 @@ void SudokuGameActivity::renderWon() {
   }
   drawStatCol(2, tr(STR_SUDOKU_COMPLETED), totalBuf);
 
-  // Optional win-rate footnote.
-  if (diffIdx >= 0 && diffIdx < 3 && stats.startedCount[diffIdx] > 0) {
-    const int rate = (stats.completedCount[diffIdx] * 100) / stats.startedCount[diffIdx];
-    char rateBuf[32];
-    snprintf(rateBuf, sizeof(rateBuf), "%s %d%%", tr(STR_SUDOKU_WIN_RATE), rate);
-    renderer.drawCenteredText(kStatusFont, statsY + statsH + 24, rateBuf);
+  if (showRate) {
+    renderer.drawCenteredText(kStatusFont, statsY + statsH + footnoteGap, rateBuf);
+  }
+
+  if (mappedInput.hasTouch()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    GUI.drawActionButton(
+        renderer,
+        gameTouchActionRect(renderer.getScreenWidth(), renderer.getScreenHeight(), metrics.contentSidePadding,
+                            metrics.menuSpacing, metrics.menuRowHeight, 0, 2),
+        tr(STR_SUDOKU_PLAY_AGAIN));
+    GUI.drawActionButton(
+        renderer,
+        gameTouchActionRect(renderer.getScreenWidth(), renderer.getScreenHeight(), metrics.contentSidePadding,
+                            metrics.menuSpacing, metrics.menuRowHeight, 1, 2),
+        tr(STR_GAME_HOME));
   }
 
   drawFooter();
-}
-
-void SudokuGameActivity::renderGameMenu() {
-  // Compact modal sized for English; 7 rows × rowH + title.
-  constexpr int titleH = 28;
-  constexpr int rowH = 32;
-  const int w = 320;
-  const int h = titleH + rowH * MENU_ITEM_COUNT + 4;
-  const int x = (renderer.getScreenWidth() - w) / 2;
-  const int y = (renderer.getScreenHeight() - h) / 2;
-
-  renderer.fillRect(x, y, w, h, false);
-  renderer.drawRect(x, y, w, h, 2, true);
-
-  // Title bar.
-  const int titleTextH = renderer.getTextHeight(kModalItemFont);
-  renderer.fillRect(x + 2, y + titleH, w - 4, 1, true);
-  renderer.drawText(kModalItemFont, x + 12, y + gameCenterY(titleH, titleTextH), tr(STR_GAME_GAME_MENU));
-
-  const char* labels[MENU_ITEM_COUNT] = {
-      tr(STR_GAME_RESUME),    tr(STR_SUDOKU_TOGGLE_NOTES), tr(STR_SUDOKU_USE_HINT), tr(STR_SUDOKU_CHECK_ERRORS),
-      tr(STR_SUDOKU_RESTART), tr(STR_GAME_NEW_GAME),       tr(STR_GAME_EXIT),
-  };
-
-  // Right-side hints (i18n-driven; no hardcoded English).
-  const char* hintNotes = notesMode ? tr(STR_SUDOKU_MODE_NOTES) : tr(STR_SUDOKU_MODE_NORMAL);
-  char hintHint[16];
-  if (hintsLeft > 0) {
-    snprintf(hintHint, sizeof(hintHint), tr(STR_SUDOKU_HINTS_LEFT), static_cast<int>(hintsLeft));
-  } else {
-    snprintf(hintHint, sizeof(hintHint), "%s", tr(STR_SUDOKU_NO_HINTS));
-  }
-  const char* hints[MENU_ITEM_COUNT] = {"", hintNotes, hintHint, "", "", "", tr(STR_GAME_HOME)};
-
-  const int itemTextH = renderer.getTextHeight(kModalItemFont);
-  const int hintTextH = renderer.getTextHeight(kModalHintFont);
-  const int firstY = y + titleH;
-
-  for (int i = 0; i < MENU_ITEM_COUNT; i++) {
-    const int rowY = firstY + i * rowH;
-    const bool inverted = (i == menuSel);
-    if (inverted) {
-      renderer.fillRect(x + 1, rowY, w - 2, rowH, true);
-    }
-    renderer.drawText(kModalItemFont, x + 12, rowY + gameCenterY(rowH, itemTextH), labels[i], !inverted);
-    if (hints[i] && hints[i][0] != '\0') {
-      const int hw = renderer.getTextWidth(kModalHintFont, hints[i]);
-      renderer.drawText(kModalHintFont, x + w - 12 - hw, rowY + gameCenterY(rowH, hintTextH) + 2, hints[i], !inverted);
-    }
-  }
 }

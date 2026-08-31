@@ -1,7 +1,7 @@
 name: Sync PR build verify
 
 # Gate every upstream-sync PR with the release env set (gh_release +
-# gh_release_cn). Lives next to sync-upstream.yml (merge orchestration)
+# unified gh_release). Lives next to sync-upstream.yml (merge orchestration)
 # but kept as its own file so the two concerns don't entangle:
 #   sync-upstream.yml -> maintain the standing chore/sync-upstream PR
 #   sync-build.yml    -> "would this PR actually ship?" build check
@@ -25,12 +25,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  select_runner:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/chore/sync-upstream') ||
       (github.event_name == 'pull_request' && github.head_ref == 'chore/sync-upstream')
+    uses: ./.github/workflows/select-build-runner.yml
+    secrets:
+      runner_status_token: ${{ secrets.H2O_RUNNER_TOKEN }}
+
+  build:
+    needs: select_runner
+    runs-on: ${{ fromJSON(needs.select_runner.outputs['runs-on']) }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -47,16 +53,17 @@ jobs:
           enable-cache: false
 
       - name: Install PlatformIO Core
-        run: uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+        run: uv pip install --system -U pioarduino==6.1.19
 
       - name: Cache PlatformIO packages
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v4
         with:
-          path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
-          restore-keys: pio-${{ runner.os }}-
+          path: ~/.platformio/.cache
+          key: pio-cache-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-cache-${{ runner.os }}-
 
-      - name: Build gh_release + gh_release_cn
+      - name: Build unified release
         run: |
           set -euo pipefail
-          pio run -e gh_release -e gh_release_cn
+          pio run -e gh_release

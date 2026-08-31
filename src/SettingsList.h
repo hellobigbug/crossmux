@@ -1,6 +1,7 @@
 #pragma once
 
 #include <BoardConfig.h>
+#include <HalFrontlight.h>
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <SdCardFontRegistry.h>
@@ -14,79 +15,76 @@
 #include "CrossPointSettings.h"
 #include "KOReaderCredentialStore.h"
 #include "ReaderFontSizes.h"
+#include "SdCardFontSystem.h"
 #include "activities/settings/SettingsActivity.h"
 #include "util/DictionaryRegistry.h"
 
-// Build the font family setting dynamically. When registry is non-null, SD card fonts
-// are appended after the built-in fonts. Otherwise only built-in fonts are listed.
+// Build the font family setting dynamically. SD-card rows follow whichever
+// built-in rows are visible in this firmware.
 inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
-  // Built-in font labels (StrId)
-  std::vector<StrId> enumValues = {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS};
-  // Runtime string labels for SD card fonts
-  std::vector<std::string> enumStringValues;
-
-  // Reserve: first CrossPointSettings::BUILTIN_FONT_COUNT entries use StrId, rest use strings
-  if (registry) {
-    const auto& families = registry->getFamilies();
-    enumStringValues.reserve(families.size());
-    std::transform(families.begin(), families.end(), std::back_inserter(enumStringValues),
-                   [](const SdCardFontFamilyInfo& f) { return f.name; });
+  std::vector<StrId> enumValues;
+#ifdef ENABLE_CHINESE_VERSION
+  if (!registry || !registry->findFamily(SdCardFontSystem::COMPLETE_CHINESE_NOTO_SANS_FAMILY)) {
+    enumValues.push_back(StrId::STR_NOTO_SANS);
   }
-
-  // Capture the SD font count for the lambdas
-  const int sdFontCount = static_cast<int>(enumStringValues.size());
-
-  // Total option count = built-in + SD card families
-  // For the combined enumStringValues: we need all entries as strings (built-in names + SD names)
-  // The render code checks enumStringValues first, then enumValues. So we build enumStringValues
-  // with all options when SD fonts are present.
-  std::vector<std::string> allStringValues;
-  if (sdFontCount > 0) {
-    allStringValues.push_back(I18N.get(StrId::STR_NOTO_SERIF));
-    allStringValues.push_back(I18N.get(StrId::STR_NOTO_SANS));
-    allStringValues.insert(allStringValues.end(), enumStringValues.begin(), enumStringValues.end());
-  }
+#else
+  enumValues = {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS};
+#endif
+  const int builtinOptionCount = static_cast<int>(enumValues.size());
 
   SettingInfo s;
   s.nameId = StrId::STR_FONT_FAMILY;
   s.type = SettingType::ENUM;
-  s.enumValues = std::move(enumValues);
-  s.enumStringValues = std::move(allStringValues);
   s.key = "fontFamily";
   s.category = StrId::STR_CAT_READER;
   s.inTextSettings = true;  // matches the static font-family entry it replaces
 
-  // Capture registry families by copy for the lambdas
-  std::vector<std::string> sdFamilyNames;
-  if (registry) {
+  if (registry && registry->getFamilyCount() > 0) {
     const auto& families = registry->getFamilies();
-    sdFamilyNames.reserve(families.size());
-    std::transform(families.begin(), families.end(), std::back_inserter(sdFamilyNames),
+    s.enumStringValues.reserve(builtinOptionCount + families.size());
+    for (const StrId value : enumValues) s.enumStringValues.push_back(I18N.get(value));
+    std::transform(families.begin(), families.end(), std::back_inserter(s.enumStringValues),
                    [](const SdCardFontFamilyInfo& f) { return f.name; });
+  } else {
+    s.enumValues = std::move(enumValues);
   }
 
-  s.valueGetter = [sdFamilyNames]() -> uint8_t {
+  // The global SdCardFontSystem owns the registry for the lifetime of every
+  // settings consumer, so referencing it avoids duplicating every family name.
+  s.valueGetter = [registry, builtinOptionCount]() -> uint8_t {
     // If an SD card font is selected, find its index
-    if (SETTINGS.sdFontFamilyName[0] != '\0') {
-      for (int i = 0; i < static_cast<int>(sdFamilyNames.size()); i++) {
-        if (sdFamilyNames[i] == SETTINGS.sdFontFamilyName) {
-          return static_cast<uint8_t>(CrossPointSettings::BUILTIN_FONT_COUNT + i);
+    if (registry && SETTINGS.sdFontFamilyName[0] != '\0') {
+      const auto& families = registry->getFamilies();
+      for (int i = 0; i < static_cast<int>(families.size()); i++) {
+        if (families[i].name == SETTINGS.sdFontFamilyName) {
+          return static_cast<uint8_t>(builtinOptionCount + i);
         }
       }
       // SD font name not found in registry — fall through to built-in
     }
+#ifdef ENABLE_CHINESE_VERSION
+    return 0;
+#else
     return SETTINGS.fontFamily < CrossPointSettings::BUILTIN_FONT_COUNT ? SETTINGS.fontFamily : 0;
+#endif
   };
 
-  s.valueSetter = [sdFamilyNames](uint8_t v) {
-    if (v < CrossPointSettings::BUILTIN_FONT_COUNT) {
+  s.valueSetter = [registry, builtinOptionCount](uint8_t v) {
+    if (v < builtinOptionCount) {
+#ifdef ENABLE_CHINESE_VERSION
+      SETTINGS.fontFamily = CrossPointSettings::NOTOSANS;
+#else
       SETTINGS.fontFamily = v;
+#endif
       SETTINGS.sdFontFamilyName[0] = '\0';
-    } else {
-      int sdIdx = v - CrossPointSettings::BUILTIN_FONT_COUNT;
-      if (sdIdx < static_cast<int>(sdFamilyNames.size())) {
-        strncpy(SETTINGS.sdFontFamilyName, sdFamilyNames[sdIdx].c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
+      SETTINGS.sdFontFlashPreload = 0;
+    } else if (registry) {
+      int sdIdx = v - builtinOptionCount;
+      const auto& families = registry->getFamilies();
+      if (sdIdx < static_cast<int>(families.size())) {
+        strncpy(SETTINGS.sdFontFamilyName, families[sdIdx].name.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
         SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
+        SETTINGS.sdFontFlashPreload = 0;
       }
     }
   };
@@ -177,24 +175,38 @@ inline SettingInfo buildDictionarySetting(const std::vector<DictionaryEntry>& di
   return s;
 }
 
-// Shared settings list used by both the device settings UI and the web settings API.
+inline std::vector<StrId> buildLongPressMenuValues() {
+  static constexpr StrId VALUES[] = {StrId::STR_KOSYNC, StrId::STR_DISABLED, StrId::STR_BOOKMARK_OPTION,
+                                     StrId::STR_DICTIONARY, StrId::STR_READER_MENU};
+  const size_t count = BoardConfig::hasHomeKey() ? std::size(VALUES) : std::size(VALUES) - 1;
+  return {VALUES, VALUES + count};
+}
+
+// Shared base settings list used by the device UI, persistence, and web API.
 // Each entry has a key (for JSON API) and category (for grouping).
 // ACTION-type entries and entries without a key are device-only.
-//
-// The static list is constructed exactly once (master's optimization, #1086 +
-// #1636) so the per-entry SettingInfo cost is paid once; every call then copies
-// it. When an SdCardFontRegistry is supplied AND has SD card fonts installed,
-// the font-family entry is replaced in that copy with a registry-aware version.
-// The font-size entry is always rebuilt, since its options are point sizes read
-// from the active family rather than a fixed enum.
-inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* registry = nullptr,
-                                                const std::vector<DictionaryEntry>* dictionaries = nullptr) {
+inline const std::vector<SettingInfo>& getBaseSettingsList() {
   static const std::vector<SettingInfo> baseList = [] {
+    // Enum settings are persisted as numeric values. Assign these labels by enum
+    // value so a reordered menu or enum cannot silently swap their behavior.
+    std::vector<StrId> sleepScreenValues(CrossPointSettings::SLEEP_SCREEN_MODE_COUNT);
+    sleepScreenValues[CrossPointSettings::DARK] = StrId::STR_DARK;
+    sleepScreenValues[CrossPointSettings::LIGHT] = StrId::STR_LIGHT;
+    sleepScreenValues[CrossPointSettings::CUSTOM] = StrId::STR_CUSTOM;
+    sleepScreenValues[CrossPointSettings::COVER] = StrId::STR_COVER;
+    sleepScreenValues[CrossPointSettings::COVER_CUSTOM] = StrId::STR_COVER_CUSTOM;
+    sleepScreenValues[CrossPointSettings::BLANK] = StrId::STR_NONE_OPT;
+    sleepScreenValues[CrossPointSettings::QUICK_RESUME] = StrId::STR_QUICK_RESUME;
+    sleepScreenValues[CrossPointSettings::TRANSPARENT] = StrId::STR_TRANSPARENT;
+
+    std::vector<StrId> statusBarClockValues(CrossPointSettings::STATUS_BAR_CLOCK_MODE_COUNT);
+    statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_HIDE] = StrId::STR_HIDE;
+    statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_RIGHT] = StrId::STR_DIR_RIGHT;
+    statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_LEFT] = StrId::STR_DIR_LEFT;
+
     std::vector<SettingInfo> v = {
         // --- Display ---
-        SettingInfo::Enum(StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen,
-                          {StrId::STR_DARK, StrId::STR_LIGHT, StrId::STR_CUSTOM, StrId::STR_COVER,
-                           StrId::STR_COVER_CUSTOM, StrId::STR_NONE_OPT, StrId::STR_QUICK_RESUME},
+        SettingInfo::Enum(StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen, std::move(sleepScreenValues),
                           "sleepScreen", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_SLEEP_COVER_MODE, &CrossPointSettings::sleepScreenCoverMode,
                           {StrId::STR_FIT, StrId::STR_CROP}, "sleepScreenCoverMode", StrId::STR_CAT_DISPLAY),
@@ -204,18 +216,39 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Enum(StrId::STR_QUICK_RESUME_TIMEOUT, &CrossPointSettings::quickResumeSleepScreen,
                           {StrId::STR_STATE_OFF, StrId::STR_STATE_ON}, "quickResumeSleepScreen",
                           StrId::STR_CAT_DISPLAY),
+        SettingInfo::Toggle(StrId::STR_STANDBY_TITLE, &CrossPointSettings::standbyShortcutEnabled,
+                            "standbyShortcutEnabled", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_HIDE_BATTERY, &CrossPointSettings::hideBatteryPercentage,
                           {StrId::STR_NEVER, StrId::STR_IN_READER, StrId::STR_ALWAYS}, "hideBatteryPercentage",
                           StrId::STR_CAT_DISPLAY),
-        SettingInfo::Enum(
-            StrId::STR_REFRESH_FREQ, &CrossPointSettings::refreshFrequency,
-            {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10, StrId::STR_PAGES_15, StrId::STR_PAGES_30},
-            "refreshFrequency", StrId::STR_CAT_DISPLAY),
+        SettingInfo::Enum(StrId::STR_REFRESH_FREQ, &CrossPointSettings::refreshFrequency,
+                          {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10, StrId::STR_PAGES_15,
+                           StrId::STR_PAGES_30, StrId::STR_NEVER},
+                          "refreshFrequency", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_UI_THEME, &CrossPointSettings::uiTheme,
                           {StrId::STR_THEME_CLASSIC, StrId::STR_THEME_LYRA, StrId::STR_THEME_LYRA_EXTENDED,
-                           StrId::STR_THEME_ROUNDEDRAFF},
+                           StrId::STR_THEME_ROUNDEDRAFF, StrId::STR_THEME_LYRA_CAROUSEL, StrId::STR_THEME_INX},
                           "uiTheme", StrId::STR_CAT_DISPLAY),
+        SettingInfo::Enum(StrId::STR_INX_RECENT_LAYOUT, &CrossPointSettings::inxRecentLayout,
+                          {StrId::STR_LAYOUT_FLOW, StrId::STR_LAYOUT_GRID, StrId::STR_LAYOUT_LIST,
+                           StrId::STR_LAYOUT_ICONS, StrId::STR_COVER},
+                          "inxRecentLayout", StrId::STR_CAT_DISPLAY),
+        SettingInfo::Enum(StrId::STR_INX_LIBRARY_LAYOUT, &CrossPointSettings::inxLibraryLayout,
+                          {StrId::STR_LAYOUT_ICONS, StrId::STR_LAYOUT_LIST}, "inxLibraryLayout",
+                          StrId::STR_CAT_DISPLAY),
+        SettingInfo::Enum(StrId::STR_INX_APPS_LAYOUT, &CrossPointSettings::inxAppsLayout,
+                          {StrId::STR_LAYOUT_ICONS, StrId::STR_LAYOUT_LIST}, "inxAppsLayout", StrId::STR_CAT_DISPLAY),
         SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
+                            StrId::STR_CAT_DISPLAY),
+        SettingInfo::Toggle(StrId::STR_SHOW_BUTTON_HINTS, &CrossPointSettings::showButtonHints, "showButtonHints",
+                            StrId::STR_CAT_DISPLAY),
+#if FREEINK_CAP_FRONTLIGHT
+        SettingInfo::Toggle(StrId::STR_RESTORE_LIGHT_ON_WAKE, &CrossPointSettings::frontlightRestoreOnWake,
+                            "frontlightRestoreOnWake", StrId::STR_CAT_DISPLAY),
+#endif
+        // Night mode = inverted output polarity everywhere (ActivityManager
+        // applies it to every activity), so it lives in the Display category.
+        SettingInfo::Toggle(StrId::STR_NIGHT_MODE, &CrossPointSettings::screenInverted, "screenInverted",
                             StrId::STR_CAT_DISPLAY),
 
         // --- Reader ---
@@ -229,7 +262,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // fixes the setting's position in the Reader category.
         SettingInfo::Enum(StrId::STR_FONT_SIZE, nullptr, {}, "fontSize", StrId::STR_CAT_READER).withTextSettings(),
         SettingInfo::Enum(StrId::STR_LINE_SPACING, &CrossPointSettings::lineSpacing,
-                          {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE}, "lineSpacing", StrId::STR_CAT_READER)
+                          {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE, StrId::STR_EXTRA_WIDE}, "lineSpacing",
+                          StrId::STR_CAT_READER)
             .withTextSettings(),
         SettingInfo::Value(StrId::STR_SCREEN_MARGIN, &CrossPointSettings::screenMargin,
                            {CrossPointSettings::SCREEN_MARGIN_MIN, CrossPointSettings::SCREEN_MARGIN_MAX,
@@ -244,8 +278,28 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Toggle(StrId::STR_EMBEDDED_STYLE, &CrossPointSettings::embeddedStyle, "embeddedStyle",
                             StrId::STR_CAT_READER)
             .withTextSettings(),
+        SettingInfo::Enum(StrId::STR_FAKE_BOLD, &CrossPointSettings::fakeBold,
+                          {StrId::STR_STATE_OFF, StrId::STR_FAKE_BOLD_LIGHT, StrId::STR_FAKE_BOLD_STANDARD,
+                           StrId::STR_FAKE_BOLD_HEAVY},
+                          "fakeBold", StrId::STR_CAT_READER)
+            .withTextSettings(),
         SettingInfo::Toggle(StrId::STR_FOCUS_READING, &CrossPointSettings::focusReadingEnabled, "focusReadingEnabled",
                             StrId::STR_CAT_READER)
+            .withTextSettings(),
+        SettingInfo::Toggle(StrId::STR_READING_BACKGROUND, &CrossPointSettings::readingBackgroundEnabled,
+                            "readingBackgroundEnabled", StrId::STR_CAT_READER),
+        SettingInfo::Toggle(StrId::STR_READING_GUIDE_LINE, &CrossPointSettings::readingGuideLineEnabled,
+                            "readingGuideLineEnabled", StrId::STR_CAT_READER)
+            .withTextSettings(),
+        SettingInfo::Enum(StrId::STR_READING_GUIDE_LINE_STYLE, &CrossPointSettings::readingGuideLineStyle,
+                          {StrId::STR_SOLID_LINE, StrId::STR_SHORT_DASH, StrId::STR_MEDIUM_DASH, StrId::STR_LONG_DASH,
+                           StrId::STR_DOTTED_LINE, StrId::STR_WAVY_LINE},
+                          "readingGuideLineStyle", StrId::STR_CAT_READER)
+            .withTextSettings(),
+        SettingInfo::SignedValue(
+            StrId::STR_READING_GUIDE_LINE_OFFSET, &CrossPointSettings::readingGuideLineOffset,
+            {CrossPointSettings::READING_GUIDE_LINE_OFFSET_MIN, CrossPointSettings::READING_GUIDE_LINE_OFFSET_MAX, 1},
+            "readingGuideLineOffset", StrId::STR_CAT_READER)
             .withTextSettings(),
         SettingInfo::Toggle(StrId::STR_HYPHENATION, &CrossPointSettings::hyphenationEnabled, "hyphenationEnabled",
                             StrId::STR_CAT_READER)
@@ -263,12 +317,24 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Enum(StrId::STR_IMAGES, &CrossPointSettings::imageRendering,
                           {StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS},
                           "imageRendering", StrId::STR_CAT_READER),
+        SettingInfo::Toggle(StrId::STR_NIGHT_MODE, &CrossPointSettings::screenInverted, "screenInverted",
+                            StrId::STR_CAT_READER),
+        SettingInfo::Enum(StrId::STR_READER_MENU_STYLE, &CrossPointSettings::readerMenuStyle,
+                          {StrId::STR_MENU_STYLE_LIST, StrId::STR_MENU_STYLE_TOOLBAR}, "readerMenuStyle",
+                          StrId::STR_CAT_READER),
         // --- Controls ---
         SettingInfo::Enum(StrId::STR_SIDE_BTN_LAYOUT, &CrossPointSettings::sideButtonLayout,
                           {StrId::STR_PREV_NEXT, StrId::STR_NEXT_PREV, StrId::STR_DISABLED}, "sideButtonLayout",
                           StrId::STR_CAT_CONTROLS),
-        SettingInfo::Enum(StrId::STR_TOUCH_READER_CONTROLS, &CrossPointSettings::touchReaderControls,
-                          {StrId::STR_STATE_OFF, StrId::STR_STATE_ON}, "touchReaderControls", StrId::STR_CAT_CONTROLS),
+        SettingInfo::Enum(
+            StrId::STR_TOUCH_READER_CONTROLS, &CrossPointSettings::touchReaderControls,
+            {StrId::STR_STATE_OFF, StrId::STR_STATE_TAP, StrId::STR_STATE_SWIPE, StrId::STR_STATE_INVERTED_TAP},
+            "touchReaderControls", StrId::STR_CAT_CONTROLS),
+        // Persisted under the legacy "tapForReaderMenu" key: old saves map
+        // 0 = Off, 1 = Tap.
+        SettingInfo::Enum(StrId::STR_SHOW_READER_MENU, &CrossPointSettings::showReaderMenu,
+                          {StrId::STR_STATE_OFF, StrId::STR_STATE_TAP, StrId::STR_STATE_SWIPE_UP}, "tapForReaderMenu",
+                          StrId::STR_CAT_CONTROLS),
         SettingInfo::Toggle(StrId::STR_FRONT_BTN_FOLLOW_ORIENTATION, &CrossPointSettings::frontButtonFollowOrientation,
                             "frontButtonFollowOrientation", StrId::STR_CAT_CONTROLS),
         SettingInfo::Enum(StrId::STR_LONG_PRESS_BEHAVIOR, &CrossPointSettings::longPressButtonBehavior,
@@ -276,12 +342,18 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                            StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION},
                           "longPressButtonBehavior", StrId::STR_CAT_CONTROLS),
         SettingInfo::Enum(StrId::STR_LONG_PRESS_MENU, &CrossPointSettings::longPressMenuFunction,
-                          {StrId::STR_KOSYNC, StrId::STR_DISABLED, StrId::STR_BOOKMARK_OPTION, StrId::STR_DICTIONARY},
-                          "longPressMenuFunction", StrId::STR_CAT_CONTROLS),
+                          buildLongPressMenuValues(), "longPressMenuFunction", StrId::STR_CAT_CONTROLS),
+#if FREEINK_CAP_TOUCH
+        SettingInfo::Enum(StrId::STR_SHORT_PWR_BTN, &CrossPointSettings::shortPwrBtn,
+                          {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_PAGE_TURN, StrId::STR_FORCE_REFRESH,
+                           StrId::STR_FOOTNOTES, StrId::STR_CONFIRM},
+                          "shortPwrBtn", StrId::STR_CAT_CONTROLS),
+#else
         SettingInfo::Enum(
             StrId::STR_SHORT_PWR_BTN, &CrossPointSettings::shortPwrBtn,
             {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_PAGE_TURN, StrId::STR_FORCE_REFRESH, StrId::STR_FOOTNOTES},
             "shortPwrBtn", StrId::STR_CAT_CONTROLS),
+#endif
         SettingInfo::Toggle(StrId::STR_PWR_BTN_FOOTNOTE_BACK, &CrossPointSettings::pwrBtnFootnoteBack,
                             "pwrBtnFootnoteBack", StrId::STR_CAT_CONTROLS),
         SettingInfo::Toggle(StrId::STR_BACK_SHORT_TO_FILE_BROWSER, &CrossPointSettings::backShortToFileBrowser,
@@ -319,6 +391,15 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Enum(StrId::STR_OPDS_FILENAME_FORMAT, &CrossPointSettings::opdsFilenameFormat,
                           {StrId::STR_FMT_AUTHOR_TITLE, StrId::STR_FMT_TITLE_AUTHOR, StrId::STR_FMT_TITLE},
                           "opdsFilenameFormat"),
+
+        // Frontlight quick-panel state is persisted and web-exposed, but the
+        // panel owns its on-device editing UI.
+        SettingInfo::Value(StrId::STR_BRIGHTNESS, &CrossPointSettings::frontlightBrightness, {0, 100, 5},
+                           "frontlightBrightness"),
+#if FREEINK_CAP_WARMLIGHT
+        SettingInfo::Value(StrId::STR_WARMTH, &CrossPointSettings::frontlightWarmth, {0, 100, 5}, "frontlightWarmth"),
+#endif
+        SettingInfo::Toggle(StrId::STR_FRONTLIGHT, &CrossPointSettings::frontlightOn, "frontlightOn"),
 
         // --- KOReader Sync (web-only, uses KOReaderCredentialStore) ---
         SettingInfo::DynamicString(
@@ -387,9 +468,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                           StrId::STR_CUSTOMISE_STATUS_BAR),
         // Clock entries (web settings; device UI groups them under Date & Time).
         // Range 0..104 = quarter-hour steps from UTC-12:00 to UTC+14:00, biased by 48.
-        SettingInfo::Enum(StrId::STR_CLOCK, &CrossPointSettings::statusBarClock,
-                          {StrId::STR_HIDE, StrId::STR_DIR_LEFT, StrId::STR_DIR_RIGHT}, "statusBarClock",
-                          StrId::STR_CUSTOMISE_STATUS_BAR),
+        SettingInfo::Enum(StrId::STR_CLOCK, &CrossPointSettings::statusBarClock, std::move(statusBarClockValues),
+                          "statusBarClock", StrId::STR_CUSTOMISE_STATUS_BAR),
         SettingInfo::Value(StrId::STR_CLOCK_UTC_OFFSET, &CrossPointSettings::clockUtcOffsetQ, {0, 104, 1},
                            "clockUtcOffsetQ", StrId::STR_CAT_SYSTEM),
         SettingInfo::Enum(StrId::STR_CLOCK_FORMAT, &CrossPointSettings::clockFormat,
@@ -413,21 +493,62 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     return v;
   }();
 
+  return baseList;
+}
+
+inline bool isSettingAvailableOnBoard(const SettingInfo& setting) {
+  if (!BoardConfig::hasTouch() && setting.nameId == StrId::STR_TOUCH_READER_CONTROLS) return false;
+  if (!BoardConfig::hasHomeKey() && setting.nameId == StrId::STR_SHOW_READER_MENU) return false;
+  const bool frontlightSetting = setting.valuePtr == &CrossPointSettings::frontlightBrightness ||
+                                 setting.valuePtr == &CrossPointSettings::frontlightOn ||
+                                 setting.valuePtr == &CrossPointSettings::frontlightRestoreOnWake
+#if FREEINK_CAP_WARMLIGHT
+                                 || setting.valuePtr == &CrossPointSettings::frontlightWarmth
+#endif
+      ;
+#if defined(SIMULATOR)
+  if (frontlightSetting) return false;
+#else
+  if (frontlightSetting && !Frontlight.present()) return false;
+#if FREEINK_CAP_WARMLIGHT
+  if (setting.valuePtr == &CrossPointSettings::frontlightWarmth && !Frontlight.hasColorTemperature()) return false;
+#endif
+#endif
+  if (!BoardConfig::hasTouch()) return true;
+  return setting.nameId != StrId::STR_FRONT_BTN_FOLLOW_ORIENTATION &&
+         setting.nameId != StrId::STR_SUNLIGHT_FADING_FIX && setting.nameId != StrId::STR_SHOW_BUTTON_HINTS &&
+         setting.nameId != StrId::STR_BACK_SHORT_TO_FILE_BROWSER;
+}
+
+// Visits the shared list without copying it. Dynamic font entries are built
+// only while their callback runs, keeping the web request's peak heap bounded.
+template <typename Callback>
+inline void forEachSettingsListEntry(const SdCardFontRegistry* registry, Callback&& callback) {
+  for (const auto& setting : getBaseSettingsList()) {
+    if (!isSettingAvailableOnBoard(setting)) continue;
+
+    if (setting.nameId == StrId::STR_FONT_FAMILY) {
+      const SettingInfo dynamicSetting = buildFontFamilySetting(registry);
+      callback(dynamicSetting);
+    } else if (setting.nameId == StrId::STR_FONT_SIZE) {
+      const SettingInfo dynamicSetting = buildFontSizeSetting(registry);
+      callback(dynamicSetting);
+    } else {
+      callback(setting);
+    }
+  }
+}
+
+// Device settings need an owned list because they retain category entries and
+// may insert a dynamically discovered dictionary entry.
+inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* registry = nullptr,
+                                                const std::vector<DictionaryEntry>* dictionaries = nullptr) {
+  const auto& baseList = getBaseSettingsList();
+
   std::vector<SettingInfo> v = baseList;
-  if (!BoardConfig::hasTouch()) {
-    v.erase(std::remove_if(v.begin(), v.end(),
-                           [](const SettingInfo& s) { return s.nameId == StrId::STR_TOUCH_READER_CONTROLS; }),
-            v.end());
-  }
-  if (BoardConfig::hasTouch()) {
-    v.erase(std::remove_if(v.begin(), v.end(),
-                           [](const SettingInfo& s) {
-                             return s.nameId == StrId::STR_FRONT_BTN_FOLLOW_ORIENTATION ||
-                                    s.nameId == StrId::STR_SUNLIGHT_FADING_FIX;
-                           }),
-            v.end());
-  }
-  if (registry && registry->getFamilyCount() > 0) {
+  v.erase(std::remove_if(v.begin(), v.end(), [](const SettingInfo& s) { return !isSettingAvailableOnBoard(s); }),
+          v.end());
+  {
     auto it = std::find_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_FONT_FAMILY; });
     if (it != v.end()) {
       *it = buildFontFamilySetting(registry);

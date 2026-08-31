@@ -30,6 +30,38 @@ class GfxRenderer {
  public:
   enum RenderMode { BW, GRAYSCALE_LSB, GRAYSCALE_MSB };
 
+  struct TwoBitPixel {
+    bool draw;
+    bool state;
+  };
+
+  // Map 0=black, 1=dark gray, 2=light gray, 3=white into the active
+  // framebuffer plane. Keep every 2-bit renderer on this single table.
+  static constexpr TwoBitPixel mapTwoBitPixel(const RenderMode mode, const uint8_t value) {
+    if (mode == BW) return {value < 3, true};
+#if FREEINK_DEVICE_EEGO_A4
+    if (mode == GRAYSCALE_MSB) return {value == 0 || value == 1, true};
+    return {value == 0 || value == 2, true};
+#else
+    if (mode == GRAYSCALE_MSB) return {value == 1 || value == 2, false};
+    return {value == 1, false};
+#endif
+  }
+
+  static constexpr TwoBitPixel mapTwoBitGlyphCoverage(const RenderMode mode, const uint8_t coverage) {
+    // Font coverage is 0=white..3=black; bitmap pixels use 0=black..3=white.
+    return mapTwoBitPixel(mode, 3 - coverage);
+  }
+
+  static constexpr bool framebufferState(const RenderMode mode, const bool state) {
+#if FREEINK_DEVICE_EEGO_A4
+    return mode == BW ? state : !state;
+#else
+    (void)mode;
+    return state;
+#endif
+  }
+
   // Logical screen orientation from the perspective of callers
   enum Orientation {
     Portrait,                  // 480x800 logical coordinates (current default)
@@ -40,11 +72,13 @@ class GfxRenderer {
 
  private:
   static constexpr size_t BW_BUFFER_CHUNK_SIZE = 8000;  // 8KB chunks to allow for non-contiguous memory
+  static constexpr uint8_t MAX_SYNTHETIC_BOLD_PIXELS = 3;
 
   HalDisplay& display;
   RenderMode renderMode;
   Orientation orientation;
   bool fadingFix;
+  mutable uint8_t syntheticBoldPixels = 0;
   uint8_t* frameBuffer = nullptr;
   uint16_t panelWidth = HalDisplay::DISPLAY_WIDTH;
   uint16_t panelHeight = HalDisplay::DISPLAY_HEIGHT;
@@ -95,12 +129,11 @@ class GfxRenderer {
   mutable int clipX1 = 0;
   mutable int clipY1 = 0;
 
-  // CJK UI font fallback map: primary (built-in, Latin-only) UI font id -> a
-  // size-matched SD-card font id that carries CJK glyphs. When a string drawn
-  // or measured with a mapped primary font contains a CJK codepoint the primary
-  // cannot render, the whole string is routed to the mapped fallback so it
-  // appears at the same point size as the surrounding UI text. Populated by the
-  // app-level SD font setup when an SD family is loaded. See resolveTextFontId().
+  // CJK UI font fallback map: primary UI font id -> a size-matched built-in or
+  // SD font id that carries CJK glyphs. When a string drawn or measured with a
+  // mapped primary font contains a CJK codepoint the primary cannot render, the
+  // whole string is routed to the mapped fallback so it appears at the same
+  // point size as the surrounding UI text. See resolveTextFontId().
   std::map<int, int> fallbackFontMap_;
 
   // If `text` contains a CJK codepoint that `fontId` cannot render and `fontId`
@@ -108,6 +141,7 @@ class GfxRenderer {
   // fontId unchanged. The whole string is routed as a unit so each draw/measure
   // call stays single-font (consistent bit depth, metrics, wrapping).
   int resolveTextFontId(int fontId, const char* text, EpdFontFamily::Style style) const;
+  void ensureSdGlyphsResident(int fontId, const char* text, EpdFontFamily::Style style, bool metadataOnly) const;
 
   void renderChar(const EpdFontFamily& fontFamily, uint32_t cp, int* x, int* y, bool pixelState,
                   EpdFontFamily::Style style) const;
@@ -127,6 +161,10 @@ class GfxRenderer {
   explicit GfxRenderer(HalDisplay& halDisplay)
       : display(halDisplay), renderMode(BW), orientation(Portrait), fadingFix(false) {}
   ~GfxRenderer() { freeBwBufferChunks(); }
+  GfxRenderer(const GfxRenderer&) = delete;
+  GfxRenderer& operator=(const GfxRenderer&) = delete;
+  GfxRenderer(GfxRenderer&&) = delete;
+  GfxRenderer& operator=(GfxRenderer&&) = delete;
 
   static constexpr int VIEWABLE_MARGIN_TOP = 9;
   static constexpr int VIEWABLE_MARGIN_RIGHT = 3;
@@ -136,16 +174,22 @@ class GfxRenderer {
   // Setup
   void begin();  // must be called right after display.begin()
   void insertFont(int fontId, EpdFontFamily font);
-  // Clears both the flash-font map and any SD-font registration for fontId.
-  // Coupled to avoid dangling SdCardFont* in sdCardFonts_ when callers free
-  // the underlying SdCardFont and forget the SD-side unregister.
+  // Clears the font, its SD registration, and only fallback mappings that
+  // reference fontId. Coupled to avoid dangling font pointers/ids when callers
+  // free the underlying font and forget the renderer-side unregister.
   void removeFont(int fontId) {
     fontMap.erase(fontId);
     sdCardFonts_.erase(fontId);
     sdCardFontScales_.erase(fontId);
+    std::erase_if(fallbackFontMap_,
+                  [fontId](const auto& mapping) { return mapping.first == fontId || mapping.second == fontId; });
   }
   void setFontCacheManager(FontCacheManager* m) { fontCacheManager_ = m; }
   FontCacheManager* getFontCacheManager() const { return fontCacheManager_; }
+  using TextGetter = const char* (*)(const void* ctx, uint32_t index);
+  void prewarmFallbackText(int fontId, TextGetter getter, const void* ctx, uint32_t textCount,
+                           EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
+  void prewarmFallbackText(int fontId, const char* text, EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
   bool isFontCacheScanning() const;
   const std::map<int, EpdFontFamily>& getFontMap() const { return fontMap; }
   void registerSdCardFont(int fontId, SdCardFont* font) { sdCardFonts_[fontId] = font; }
@@ -162,10 +206,9 @@ class GfxRenderer {
   }
   const std::map<int, SdCardFont*>& getSdCardFonts() const { return sdCardFonts_; }
   bool isSdCardFont(int fontId) const { return sdCardFonts_.count(fontId) > 0; }
-  // Register/clear size-matched CJK UI fallbacks (see fallbackFontMap_).
-  // setFallbackFont maps a primary UI font id to an SD font id of the same size.
+  // Register a size-matched CJK UI fallback (see fallbackFontMap_).
+  // The fallback may be built in or loaded from SD.
   void setFallbackFont(int primaryFontId, int fallbackFontId) { fallbackFontMap_[primaryFontId] = fallbackFontId; }
-  void clearFallbackFonts() { fallbackFontMap_.clear(); }
   // Ensure SD card font glyph data is loaded for the given text. Called from layout code
   // (which holds a const GfxRenderer&) before measuring word widths. Safe to call on non-SD fonts (no-op).
   // styleMask: bitmask of styles to prepare (bit 0=regular, 1=bold, 2=italic, 3=bold-italic).
@@ -192,6 +235,12 @@ class GfxRenderer {
   }
   void clearNextRefreshOverride() const { nextRefreshOverridePending = false; }
   void requestNextFullRefresh() const { requestNextRefresh(HalDisplay::FULL_REFRESH); }
+  // One-shot: the next displayBuffer()/displayBufferAsync() call uses `mode`
+  // instead of what its caller asked for, then the override clears itself.
+  // Lets a closing overlay (the control center's refresh tile) hand a
+  // ghost-cleanup waveform to the repaint of whatever screen is underneath,
+  // which it cannot reach directly.
+  void promoteNextRefresh(const HalDisplay::RefreshMode mode) const { requestNextRefresh(mode); }
   // Non-blocking refresh: starts the waveform and returns so CPU work (e.g.
   // grayscale strip rendering) can overlap the panel's refresh time. The
   // framebuffer must stay untouched until waitRefreshComplete(). Falls back to
@@ -279,9 +328,12 @@ class GfxRenderer {
                        bool roundBottomLeft, bool roundBottomRight, Color color) const;
   void drawImage(const uint8_t bitmap[], int x, int y, int width, int height) const;
   void drawIcon(const uint8_t bitmap[], int x, int y, int size) const;
-  void drawBitmap(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight, float cropX = 0,
-                  float cropY = 0) const;
+  void drawIconInverted(const uint8_t bitmap[], int x, int y, int size) const;
+  void drawBitmap(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight, float cropX = 0, float cropY = 0,
+                  bool preserveTransparency = false) const;
+  bool drawBitmapCropToFill(const Bitmap& bitmap, int x, int y, int width, int height) const;
   void drawBitmap1Bit(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight) const;
+  void preserveImagePolarity(int x, int y, int width, int height) const;
   void fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state = true) const;
 
   // Snapshot / restore a screen-coordinate framebuffer region (byte-aligned in
@@ -294,6 +346,23 @@ class GfxRenderer {
   void writeFramebufferRegion(int x, int y, int w, int h, const uint8_t* src);
 
   // Text
+  // Page-local guard for synthetic bold. Restores the previous renderer state
+  // so EPUB content cannot leak the effect into status bars or other UI.
+  class SyntheticBoldScope {
+   public:
+    SyntheticBoldScope(const GfxRenderer& renderer, const uint8_t pixels)
+        : renderer_(renderer), previous_(renderer.syntheticBoldPixels) {
+      renderer_.syntheticBoldPixels = pixels <= MAX_SYNTHETIC_BOLD_PIXELS ? pixels : MAX_SYNTHETIC_BOLD_PIXELS;
+    }
+    ~SyntheticBoldScope() { renderer_.syntheticBoldPixels = previous_; }
+    SyntheticBoldScope(const SyntheticBoldScope&) = delete;
+    SyntheticBoldScope& operator=(const SyntheticBoldScope&) = delete;
+
+   private:
+    const GfxRenderer& renderer_;
+    uint8_t previous_;
+  };
+
   int getTextWidth(int fontId, const char* text, EpdFontFamily::Style style = EpdFontFamily::REGULAR,
                    BidiUtils::BidiBaseDir baseDir = BidiUtils::BidiBaseDir::AUTO) const;
   void drawCenteredText(int fontId, int y, const char* text, bool black = true,
@@ -348,8 +417,18 @@ class GfxRenderer {
   // numRows)), bypassing the framebuffer. supportsStripGrayscale() gates use.
   void writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* scratch, int yStart, int numRows) const;
   bool supportsStripGrayscale() const;
-  bool storeBwBuffer();    // Returns true if buffer was stored successfully
-  void restoreBwBuffer();  // Restore and free the stored buffer
+  bool combinesGrayscaleBase() const;
+  bool storeBwBuffer();  // Returns true if buffer was stored successfully
+  // Restore and free the stored buffer. resyncPanelBaseline rewrites the
+  // controller's differential baseline to the restored frame — correct after
+  // a grayscale render (the glass matches the stored BW plane), WRONG when
+  // the glass shows content painted after the store (overlay chrome): the
+  // next differential would treat that content as already erased and leave
+  // it on the glass. Such callers pass false so the baseline keeps tracking
+  // what was last pushed.
+  void restoreBwBuffer(bool resyncPanelBaseline = true);
+  // Free a stored buffer without restoring it (the page under it changed).
+  void discardStoredBwBuffer() { freeBwBufferChunks(); }
   void cleanupGrayscaleWithFrameBuffer() const;
 
   // Font helpers
@@ -402,3 +481,19 @@ class GfxRenderer {
   bool copyBufferToRegion(int logicalX, int logicalY, int logicalW, int logicalH, const uint8_t* buf,
                           size_t bufSize) const;
 };
+
+#if FREEINK_DEVICE_EEGO_A4
+static_assert(GfxRenderer::mapTwoBitPixel(GfxRenderer::GRAYSCALE_MSB, 0).draw);
+static_assert(GfxRenderer::mapTwoBitPixel(GfxRenderer::GRAYSCALE_MSB, 1).draw);
+static_assert(!GfxRenderer::mapTwoBitPixel(GfxRenderer::GRAYSCALE_MSB, 2).draw);
+static_assert(GfxRenderer::mapTwoBitPixel(GfxRenderer::GRAYSCALE_LSB, 0).draw);
+static_assert(!GfxRenderer::mapTwoBitPixel(GfxRenderer::GRAYSCALE_LSB, 1).draw);
+static_assert(GfxRenderer::mapTwoBitPixel(GfxRenderer::GRAYSCALE_LSB, 2).draw);
+#else
+static_assert(!GfxRenderer::mapTwoBitPixel(GfxRenderer::GRAYSCALE_MSB, 0).draw);
+static_assert(GfxRenderer::mapTwoBitPixel(GfxRenderer::GRAYSCALE_MSB, 1).draw);
+static_assert(GfxRenderer::mapTwoBitPixel(GfxRenderer::GRAYSCALE_MSB, 2).draw);
+static_assert(!GfxRenderer::mapTwoBitPixel(GfxRenderer::GRAYSCALE_LSB, 0).draw);
+static_assert(GfxRenderer::mapTwoBitPixel(GfxRenderer::GRAYSCALE_LSB, 1).draw);
+static_assert(!GfxRenderer::mapTwoBitPixel(GfxRenderer::GRAYSCALE_LSB, 2).draw);
+#endif

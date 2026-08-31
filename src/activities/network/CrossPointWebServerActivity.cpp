@@ -2,17 +2,22 @@
 
 #include <DNSServer.h>
 #include <ESPmDNS.h>
+#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Memory.h>
 #include <WiFi.h>
 
+#include <algorithm>
 #include <cstddef>
 
 #include "MappedInputManager.h"
 #include "NetworkModeSelectionActivity.h"
+#include "NetworkStartup.h"
 #include "SilentRestart.h"
 #include "WifiSelectionActivity.h"
 #include "activities/network/CalibreConnectActivity.h"
+#include "components/SubpageLayout.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/QrUtils.h"
@@ -65,6 +70,16 @@ void CrossPointWebServerActivity::onEnter() {
 
   LOG_DBG("WEBACT", "Free heap at onEnter: %d bytes", ESP.getFreeHeap());
 
+  // Heap-critical transition: WiFi (~45KB) plus the web server have to fit in
+  // what's left of the ~380KB parts. SD-font caches retained for the CJK UI
+  // fallback (mini glyph/kern arenas, kern class tables) are rebuildable on
+  // demand — release them up front instead of aborting in startWebServer()
+  // when the heap comes up short (observed on X3 with a Korean SD font).
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    fcm->releaseSdFontCaches();
+    LOG_DBG("WEBACT", "Free heap after SD font cache release: %d bytes", ESP.getFreeHeap());
+  }
+
   // Reset state
   state = WebServerActivityState::MODE_SELECTION;
   networkMode = NetworkMode::JOIN_NETWORK;
@@ -75,14 +90,13 @@ void CrossPointWebServerActivity::onEnter() {
   requestUpdate();
 
   LOG_DBG("WEBACT", "Launching NetworkModeSelectionActivity...");
-  startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
-                         [this](const ActivityResult& result) {
-                           if (result.isCancelled) {
-                             onGoHome();
-                           } else {
-                             onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
-                           }
-                         });
+  startActivityForResultWith<NetworkModeSelectionActivity>([this](const ActivityResult& result) {
+    if (result.isCancelled) {
+      onGoHome();
+    } else {
+      onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
+    }
+  });
 }
 
 void CrossPointWebServerActivity::onExit() {
@@ -114,45 +128,52 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
     modeName = "Connect to Calibre";
   } else if (mode == NetworkMode::CREATE_HOTSPOT) {
     modeName = "Create Hotspot";
+#if FREEINK_CAP_USB_MSC
+  } else if (mode == NetworkMode::USB_DRIVE) {
+    modeName = "USB Drive";
+#endif
   }
   LOG_DBG("WEBACT", "Network mode selected: %s", modeName);
+
+#if FREEINK_CAP_USB_MSC
+  if (mode == NetworkMode::USB_DRIVE) {
+    activityManager.goToUsbDrive();
+    return;
+  }
+#endif
 
   networkMode = mode;
   isApMode = (mode == NetworkMode::CREATE_HOTSPOT);
 
   if (mode == NetworkMode::CONNECT_CALIBRE) {
-    startActivityForResult(
-        std::make_unique<CalibreConnectActivity>(renderer, mappedInput), [this](const ActivityResult& result) {
-          state = WebServerActivityState::MODE_SELECTION;
+    startActivityForResultWith<CalibreConnectActivity>([this](const ActivityResult& result) {
+      state = WebServerActivityState::MODE_SELECTION;
 
-          startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
-                                 [this](const ActivityResult& result) {
-                                   if (result.isCancelled) {
-                                     onGoHome();
-                                   } else {
-                                     onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
-                                   }
-                                 });
-        });
+      startActivityForResultWith<NetworkModeSelectionActivity>([this](const ActivityResult& result) {
+        if (result.isCancelled) {
+          onGoHome();
+        } else {
+          onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
+        }
+      });
+    });
     return;
   }
 
   if (mode == NetworkMode::JOIN_NETWORK) {
     // STA mode - launch WiFi selection
-    LOG_DBG("WEBACT", "Turning on WiFi (STA mode)...");
-    WiFi.mode(WIFI_STA);
-
     state = WebServerActivityState::WIFI_SELECTION;
     LOG_DBG("WEBACT", "Launching WifiSelectionActivity...");
-    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
-                           [this](const ActivityResult& result) {
-                             if (!result.isCancelled) {
-                               const auto& wifi = std::get<WifiResult>(result.data);
-                               connectedIP = wifi.ip;
-                               connectedSSID = wifi.ssid;
-                             }
-                             onWifiSelectionComplete(!result.isCancelled);
-                           });
+    if (!startActivityForResultWith<WifiSelectionActivity>([this](const ActivityResult& result) {
+          if (!result.isCancelled) {
+            const auto& wifi = std::get<WifiResult>(result.data);
+            connectedIP = wifi.ip;
+            connectedSSID = wifi.ssid;
+          }
+          onWifiSelectionComplete(!result.isCancelled);
+        })) {
+      onGoHome();
+    }
   } else {
     // AP mode - start access point
     state = WebServerActivityState::AP_STARTING;
@@ -177,14 +198,13 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
     // User cancelled - go back to mode selection
     state = WebServerActivityState::MODE_SELECTION;
 
-    startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
-                           [this](const ActivityResult& result) {
-                             if (result.isCancelled) {
-                               onGoHome();
-                             } else {
-                               onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
-                             }
-                           });
+    startActivityForResultWith<NetworkModeSelectionActivity>([this](const ActivityResult& result) {
+      if (result.isCancelled) {
+        onGoHome();
+      } else {
+        onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
+      }
+    });
   }
 }
 
@@ -193,7 +213,7 @@ void CrossPointWebServerActivity::startAccessPoint() {
   LOG_DBG("WEBACT", "Free heap before AP start: %d bytes", ESP.getFreeHeap());
 
   // Configure and start the AP
-  WiFi.mode(WIFI_AP);
+  NetworkStartup::setMode(renderer, WIFI_AP);
   delay(100);
 
   // Start soft AP
@@ -230,7 +250,12 @@ void CrossPointWebServerActivity::startAccessPoint() {
   // Start DNS server for captive portal behavior
   // This redirects all DNS queries to our IP, making any domain typed resolve to us
   stopDnsServer();
-  dnsServer = new DNSServer();
+  dnsServer = new (std::nothrow) DNSServer();
+  if (!dnsServer) {
+    LOG_ERR("WEBACT", "OOM: DNSServer (%u bytes)", static_cast<unsigned>(sizeof(DNSServer)));
+    onGoHome();
+    return;
+  }
   dnsServer->setErrorReplyCode(DNSReplyCode::NoError);
   dnsServer->start(DNS_PORT, "*", apIP);
   LOG_DBG("WEBACT", "DNS server started for captive portal");
@@ -244,8 +269,21 @@ void CrossPointWebServerActivity::startAccessPoint() {
 void CrossPointWebServerActivity::startWebServer() {
   LOG_DBG("WEBACT", "Starting web server...");
 
+  // Repeat the release right before the allocation: the WiFi selection screen
+  // rendered since onEnter(), and a CJK SSID repopulates the SD-font caches.
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    LOG_DBG("WEBACT", "Free heap before SD font cache release: %d bytes", ESP.getFreeHeap());
+    fcm->releaseSdFontCaches();
+    LOG_DBG("WEBACT", "Free heap before server alloc: %d bytes", ESP.getFreeHeap());
+  }
+
   // Create the web server instance
-  webServer.reset(new CrossPointWebServer());
+  webServer = makeUniqueNoThrow<CrossPointWebServer>();
+  if (!webServer) {
+    LOG_ERR("WEBACT", "OOM: CrossPointWebServer (%u bytes)", static_cast<unsigned>(sizeof(CrossPointWebServer)));
+    onGoHome();
+    return;
+  }
   webServer->begin();
 
   if (webServer->isRunning()) {
@@ -341,11 +379,11 @@ void CrossPointWebServerActivity::loop() {
         // Yield and check for exit button every 64 iterations
         if ((i & 0x3F) == 0x3F) {
           yield();
-          // Force trigger an update of which buttons are being pressed so be have accurate state
-          // for back button checking
+          // Pump input inside this blocking loop so exit events remain responsive.
           mappedInput.update();
-          // Check for exit button inside loop for responsiveness
-          if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+          // This update consumes the one-shot Home event before ActivityManager
+          // can see it, so handle Home here alongside Back.
+          if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasHomeGesture()) {
             onGoHome();
             return;
           }
@@ -354,8 +392,8 @@ void CrossPointWebServerActivity::loop() {
       lastHandleClientTime = millis();
     }
 
-    // Handle exit on Back button (also check outside loop)
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    // Also check outside the request-processing loop.
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasHomeGesture()) {
       onGoHome();
       return;
     }
@@ -372,20 +410,19 @@ void CrossPointWebServerActivity::render(RenderLock&&) {
   // Subactivities handle their own rendering
   if (state == WebServerActivityState::SERVER_RUNNING || state == WebServerActivityState::AP_STARTING) {
     renderer.clearScreen();
-    const auto& metrics = UITheme::getInstance().getMetrics();
-    const auto pageWidth = renderer.getScreenWidth();
-    const auto pageHeight = renderer.getScreenHeight();
-
-    GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, headerTitle(), nullptr);
 
     if (state == WebServerActivityState::SERVER_RUNNING) {
-      GUI.drawSubHeader(renderer, Rect{0, metrics.topPadding + metrics.headerHeight, pageWidth, metrics.tabBarHeight},
-                        connectedSSID.c_str());
       renderServerRunning();
     } else {
-      const auto height = renderer.getLineHeight(UI_10_FONT_ID);
-      const auto top = (pageHeight - height) / 2;
-      renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_STARTING_HOTSPOT));
+      const auto& metrics = UITheme::getInstance().getMetrics();
+      const Rect safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+      GUI.drawHeader(renderer, Rect{safeArea.x, safeArea.y + metrics.topPadding, safeArea.width, metrics.headerHeight},
+                     headerTitle(), nullptr);
+      const Rect content = SubpageLayout::contentRect(safeArea, metrics);
+      const Rect text = SubpageLayout::insetHorizontal(content, metrics.contentSidePadding);
+      const int height = renderer.getLineHeight(UI_12_FONT_ID);
+      UITheme::drawCenteredText(renderer, text, UI_12_FONT_ID, SubpageLayout::centeredTop(content, height),
+                                tr(STR_STARTING_HOTSPOT));
     }
     renderer.displayBuffer();
   }
@@ -393,73 +430,80 @@ void CrossPointWebServerActivity::render(RenderLock&&) {
 
 void CrossPointWebServerActivity::renderServerRunning() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const auto pageWidth = renderer.getScreenWidth();
+  const Rect safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  const int pageWidth = safeArea.width;
 
   constexpr const char* urlSuffix = "/";
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, headerTitle(), nullptr);
-  GUI.drawSubHeader(renderer, Rect{0, metrics.topPadding + metrics.headerHeight, pageWidth, metrics.tabBarHeight},
-                    connectedSSID.c_str());
+  GUI.drawHeader(renderer, Rect{safeArea.x, safeArea.y + metrics.topPadding, safeArea.width, metrics.headerHeight},
+                 headerTitle(), nullptr);
+  GUI.drawSubHeader(
+      renderer,
+      Rect{safeArea.x, safeArea.y + metrics.topPadding + metrics.headerHeight, safeArea.width, metrics.tabBarHeight},
+      connectedSSID.c_str());
 
   if (!isApMode) {
-    renderWifiIndicator(metrics.topPadding + metrics.headerHeight);
+    renderWifiIndicator(safeArea.y + metrics.topPadding + metrics.headerHeight);
   }
 
-  int startY = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing * 2;
-  int height10 = renderer.getLineHeight(UI_10_FONT_ID);
+  const Rect body = SubpageLayout::contentRect(safeArea, metrics, true);
+  const int relatedGap = SubpageLayout::relatedGap(metrics);
+  const int sectionGap = SubpageLayout::sectionGap(metrics);
+  int startY = body.y + sectionGap;
+  const int height10 = renderer.getLineHeight(UI_10_FONT_ID);
   if (isApMode) {
     // AP mode display
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, startY, tr(STR_CONNECT_WIFI_HINT), true,
+    renderer.drawText(UI_10_FONT_ID, body.x + metrics.contentSidePadding, startY, tr(STR_CONNECT_WIFI_HINT), true,
                       EpdFontFamily::BOLD);
-    startY += height10 + metrics.verticalSpacing * 2;
+    startY += height10 + sectionGap;
 
     // Show QR code for Wifi
     // follows spec at https://github.com/zxing/zxing/wiki/Barcode-Contents#wi-fi-network-config-android-ios-11
     const std::string wifiConfig = std::string("WIFI:T:nopass;S:") + connectedSSID + ";;";
-    const Rect qrBoundsWifi(metrics.contentSidePadding, startY, QR_CODE_WIDTH, QR_CODE_HEIGHT);
+    const Rect qrBoundsWifi(body.x + metrics.contentSidePadding, startY, QR_CODE_WIDTH, QR_CODE_HEIGHT);
     QrUtils::drawQrCode(renderer, qrBoundsWifi, wifiConfig);
 
     // Show network name
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding + QR_CODE_WIDTH + metrics.verticalSpacing, startY + 80,
-                      connectedSSID.c_str());
+    const int sideTextX = body.x + metrics.contentSidePadding + QR_CODE_WIDTH + sectionGap;
+    const int sideTextWidth = std::max(1, body.x + body.width - metrics.contentSidePadding - sideTextX);
+    const std::string shownSsid = renderer.truncatedText(UI_10_FONT_ID, connectedSSID.c_str(), sideTextWidth);
+    renderer.drawText(UI_10_FONT_ID, sideTextX, startY + 80, shownSsid.c_str());
 
-    startY += QR_CODE_HEIGHT + 2 * metrics.verticalSpacing;
+    startY += QR_CODE_HEIGHT + sectionGap;
 
     // Show primary URL (hostname)
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, startY, tr(STR_OPEN_URL_HINT), true,
+    renderer.drawText(UI_10_FONT_ID, body.x + metrics.contentSidePadding, startY, tr(STR_OPEN_URL_HINT), true,
                       EpdFontFamily::BOLD);
-    startY += height10 + metrics.verticalSpacing * 2;
+    startY += height10 + sectionGap;
 
     std::string hostnameUrl = std::string("http://") + AP_HOSTNAME + ".local" + urlSuffix;
     std::string ipUrl = tr(STR_OR_HTTP_PREFIX) + connectedIP + urlSuffix;
 
     // Show QR code for URL
-    const Rect qrBoundsUrl(metrics.contentSidePadding, startY, QR_CODE_WIDTH, QR_CODE_HEIGHT);
+    const Rect qrBoundsUrl(body.x + metrics.contentSidePadding, startY, QR_CODE_WIDTH, QR_CODE_HEIGHT);
     QrUtils::drawQrCode(renderer, qrBoundsUrl, hostnameUrl);
 
     // Show IP address as fallback
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding + QR_CODE_WIDTH + metrics.verticalSpacing, startY + 80,
-                      hostnameUrl.c_str());
-    renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding + QR_CODE_WIDTH + metrics.verticalSpacing, startY + 100,
-                      ipUrl.c_str());
+    const std::string shownHost = renderer.truncatedText(UI_10_FONT_ID, hostnameUrl.c_str(), sideTextWidth);
+    const std::string shownIp = renderer.truncatedText(SMALL_FONT_ID, ipUrl.c_str(), sideTextWidth);
+    renderer.drawText(UI_10_FONT_ID, sideTextX, startY + 80, shownHost.c_str());
+    renderer.drawText(SMALL_FONT_ID, sideTextX, startY + 80 + height10 + relatedGap, shownIp.c_str());
   } else {
-    startY += metrics.verticalSpacing * 2;
-
     // STA mode display (original behavior)
     // std::string ipInfo = "IP Address: " + connectedIP;
     renderer.drawCenteredText(UI_10_FONT_ID, startY, tr(STR_OPEN_URL_HINT), true, EpdFontFamily::BOLD);
     startY += height10;
     renderer.drawCenteredText(UI_10_FONT_ID, startY, tr(STR_SCAN_QR_HINT), true, EpdFontFamily::BOLD);
-    startY += height10 + metrics.verticalSpacing * 2;
+    startY += height10 + sectionGap;
 
     // Show QR code for URL
     std::string webInfo = std::string("http://") + connectedIP + urlSuffix;
-    const Rect qrBounds((pageWidth - QR_CODE_WIDTH) / 2, startY, QR_CODE_WIDTH, QR_CODE_HEIGHT);
+    const Rect qrBounds(safeArea.x + (pageWidth - QR_CODE_WIDTH) / 2, startY, QR_CODE_WIDTH, QR_CODE_HEIGHT);
     QrUtils::drawQrCode(renderer, qrBounds, webInfo);
-    startY += QR_CODE_HEIGHT + metrics.verticalSpacing * 2;
+    startY += QR_CODE_HEIGHT + sectionGap;
 
     // Show web server URL prominently
     renderer.drawCenteredText(UI_10_FONT_ID, startY, webInfo.c_str(), true);
-    startY += height10 + 5;
+    startY += height10 + relatedGap;
 
     // Also show hostname URL
     std::string hostnameUrl = std::string(tr(STR_OR_HTTP_PREFIX)) + AP_HOSTNAME + ".local" + urlSuffix;
@@ -476,10 +520,11 @@ void CrossPointWebServerActivity::renderWifiIndicator(int subHeaderTop) const {
   constexpr int BAR_GAP = 2;
   constexpr int ICON_HEIGHT = 14;
   const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
   const int iconWidth = BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP;
-  const int iconRight = renderer.getScreenWidth() - metrics.contentSidePadding;
+  const int iconRight = safeArea.x + safeArea.width - metrics.contentSidePadding;
   const int iconLeft = iconRight - iconWidth;
-  const int iconBottom = subHeaderTop + metrics.tabBarHeight - metrics.verticalSpacing;
+  const int iconBottom = subHeaderTop + metrics.tabBarHeight - SubpageLayout::relatedGap(metrics);
 
   const bool wifiUp = (WiFi.status() == WL_CONNECTED) && (consecutiveDisconnects == 0);
   if (wifiUp) {

@@ -18,7 +18,6 @@ using Kind = ChineseChessBoard::Kind;
 using Move = ChineseChessBoard::Move;
 
 constexpr int kStatusFont = UI_12_FONT_ID;
-constexpr int kModalItemFont = UI_12_FONT_ID;
 constexpr int kHeroFont = NOTOSERIF_16_FONT_ID;
 constexpr int kStatValueFont = NOTOSANS_16_FONT_ID;
 
@@ -65,7 +64,6 @@ void ChineseChessGameActivity::onEnter() {
   blackElapsedMs = 0;
   lastTickMs = millis();
   saveDebouncer.clear();
-  menuSel = 0;
   statsRecorded = false;
   resignedFlag = false;
   resignWinner = Side::Red;
@@ -151,14 +149,39 @@ void ChineseChessGameActivity::loop() {
 
 // ---------- Geometry ----------
 
+int ChineseChessGameActivity::boardOriginX() const {
+  return (renderer.getScreenWidth() - BOARD_PITCH * (ChineseChessBoard::FILES - 1)) / 2;
+}
+
 void ChineseChessGameActivity::cellXY(uint8_t r, uint8_t c, int* x, int* y) const {
-  *x = BOARD_ORIGIN_X + static_cast<int>(c) * BOARD_PITCH;
+  *x = boardOriginX() + static_cast<int>(c) * BOARD_PITCH;
   *y = BOARD_ORIGIN_Y + static_cast<int>(r) * BOARD_PITCH;
 }
 
 // ---------- Input ----------
 
 void ChineseChessGameActivity::handleInputPlaying() {
+  int touchX = 0;
+  int touchY = 0;
+  int row = 0;
+  int column = 0;
+  if (mappedInput.wasScreenTouchDown(touchX, touchY) &&
+      gameIntersectionFromPoint(boardOriginX(), BOARD_ORIGIN_Y, BOARD_PITCH, ChineseChessBoard::RANKS,
+                                ChineseChessBoard::FILES, touchX, touchY, row, column)) {
+    cursorR = static_cast<uint8_t>(row);
+    cursorC = static_cast<uint8_t>(column);
+    requestUpdate();
+    return;
+  }
+  if (mappedInput.wasScreenTapped(touchX, touchY) &&
+      gameIntersectionFromPoint(boardOriginX(), BOARD_ORIGIN_Y, BOARD_PITCH, ChineseChessBoard::RANKS,
+                                ChineseChessBoard::FILES, touchX, touchY, row, column)) {
+    cursorR = static_cast<uint8_t>(row);
+    cursorC = static_cast<uint8_t>(column);
+    doConfirm();
+    requestUpdate();
+    return;
+  }
   if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
     moveCursor(-1, 0);
     requestUpdate();
@@ -186,30 +209,24 @@ void ChineseChessGameActivity::handleInputPlaying() {
 }
 
 void ChineseChessGameActivity::handleInputGameMenu() {
-  if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
-      mappedInput.wasPressed(MappedInputManager::Button::Left)) {
-    menuSel = static_cast<uint8_t>((menuSel + MENU_ITEM_COUNT - 1) % MENU_ITEM_COUNT);
-    requestUpdate();
-  } else if (mappedInput.wasPressed(MappedInputManager::Button::Down) ||
-             mappedInput.wasPressed(MappedInputManager::Button::Right)) {
-    menuSel = static_cast<uint8_t>((menuSel + 1) % MENU_ITEM_COUNT);
-    requestUpdate();
-  } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    runMenuItem(menuSel);
-    requestUpdate();
-  } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    resumeFromMenu();
-    requestUpdate();
-  }
+  gameMenu.handleInput(mappedInput, [this] { requestUpdate(); });
+  if (!gameMenu.isActive() && state == State::GameMenu) resumeFromMenu();
 }
 
 void ChineseChessGameActivity::handleInputGameOver() {
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    const auto m = mode;
-    const auto lv = aiLevel;
-    activityManager.replaceActivity(std::make_unique<ChineseChessGameActivity>(renderer, mappedInput, m, false, lv));
-  } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    activityManager.replaceActivity(std::make_unique<ChineseChessMenuActivity>(renderer, mappedInput));
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect again = gameTouchActionRect(renderer.getScreenWidth(), renderer.getScreenHeight(),
+                                         metrics.contentSidePadding, metrics.menuSpacing, metrics.menuRowHeight, 0, 2);
+  const Rect home = gameTouchActionRect(renderer.getScreenWidth(), renderer.getScreenHeight(),
+                                        metrics.contentSidePadding, metrics.menuSpacing, metrics.menuRowHeight, 1, 2);
+  if (mappedInput.wasTapInRect(again.x, again.y, again.width, again.height) ||
+      mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    activityManager.replaceActivityWith<ChineseChessGameActivity>(mode, false, aiLevel);
+    return;
+  }
+  if (mappedInput.wasTapInRect(home.x, home.y, home.width, home.height) ||
+      mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    activityManager.replaceActivityWith<ChineseChessMenuActivity>();
   }
 }
 
@@ -329,7 +346,11 @@ void ChineseChessGameActivity::onGameOver() {
 
 void ChineseChessGameActivity::enterGameMenu() {
   state = State::GameMenu;
-  menuSel = 0;
+  const char* options[MENU_ITEM_COUNT] = {
+      tr(STR_GAME_RESUME), tr(STR_GOMOKU_UNDO), tr(STR_GOMOKU_RESIGN), tr(STR_GAME_NEW_GAME), tr(STR_GAME_EXIT),
+  };
+  gameMenu.show(tr(STR_GAME_GAME_MENU), options, MENU_ITEM_COUNT, 0,
+                [this](const int index) { runMenuItem(static_cast<uint8_t>(index)); });
 }
 
 void ChineseChessGameActivity::resumeFromMenu() {
@@ -369,12 +390,12 @@ void ChineseChessGameActivity::runMenuItem(uint8_t i) {
       const auto m = mode;
       const auto lv = aiLevel;
       ChineseChessStore::clear();
-      activityManager.replaceActivity(std::make_unique<ChineseChessGameActivity>(renderer, mappedInput, m, false, lv));
+      activityManager.replaceActivityWith<ChineseChessGameActivity>(m, false, lv);
       return;
     }
     case 4:  // Exit to menu
       flushSave();
-      activityManager.replaceActivity(std::make_unique<ChineseChessMenuActivity>(renderer, mappedInput));
+      activityManager.replaceActivityWith<ChineseChessMenuActivity>();
       return;
   }
 }
@@ -412,7 +433,7 @@ void ChineseChessGameActivity::render(RenderLock&&) {
       break;
     case State::GameMenu:
       renderPlaying();
-      renderGameMenu();
+      if (gameMenu.processRender(renderer, mappedInput)) return;
       break;
     case State::GameOver:
       renderGameOver();
@@ -465,7 +486,7 @@ void ChineseChessGameActivity::drawTitleBar() {
 // ---------- Board ----------
 
 void ChineseChessGameActivity::drawBoard() {
-  const int ox = BOARD_ORIGIN_X;
+  const int ox = boardOriginX();
   const int oy = BOARD_ORIGIN_Y;
   const int width = BOARD_PITCH * (ChineseChessBoard::FILES - 1);
   const int height = BOARD_PITCH * (ChineseChessBoard::RANKS - 1);
@@ -495,7 +516,7 @@ void ChineseChessGameActivity::drawBoard() {
 }
 
 void ChineseChessGameActivity::drawPalaceLines() {
-  const int ox = BOARD_ORIGIN_X;
+  const int ox = boardOriginX();
   const int oy = BOARD_ORIGIN_Y;
   // Black palace: rows 0..2, cols 3..5.
   {
@@ -520,7 +541,7 @@ void ChineseChessGameActivity::drawPalaceLines() {
 void ChineseChessGameActivity::drawRiver() {
   // The river sits between rows 4 and 5. Add two short horizontal lines and
   // a centered text label (using ASCII to avoid extra CJK glyph dependency).
-  const int ox = BOARD_ORIGIN_X;
+  const int ox = boardOriginX();
   const int oy = BOARD_ORIGIN_Y;
   const int yMid = oy + 4 * BOARD_PITCH + BOARD_PITCH / 2;
   const int width = BOARD_PITCH * (ChineseChessBoard::FILES - 1);
@@ -621,7 +642,6 @@ void ChineseChessGameActivity::drawCursor() {
 void ChineseChessGameActivity::drawInfoPanel() {
   const int sw = renderer.getScreenWidth();
   const int statY = INFO_PANEL_Y;
-  constexpr int statH = 60;
   constexpr int cellW = 180;
   constexpr int cellGap = 16;
   const int totalW = 2 * cellW + cellGap;
@@ -631,7 +651,7 @@ void ChineseChessGameActivity::drawInfoPanel() {
   const Side activeSide = gameLive ? board.nextTurn() : Side::Red;
 
   auto drawCell = [&](int xLeft, Side s) {
-    renderer.drawRect(xLeft, statY, cellW, statH, true);
+    renderer.drawRect(xLeft, statY, cellW, INFO_PANEL_H, true);
     // Per-side elapsed clock (chess-clock style: only the side to move ticks).
     char timeBuf[8];
     gameFormatElapsed((s == Side::Red) ? redElapsedMs : blackElapsedMs, timeBuf, sizeof(timeBuf));
@@ -644,7 +664,7 @@ void ChineseChessGameActivity::drawInfoPanel() {
     constexpr int gap = 12;
     const int groupW = labelW + gap + valW;
     const int gx = xLeft + (cellW - groupW) / 2;
-    const int cy = statY + statH / 2;
+    const int cy = statY + INFO_PANEL_H / 2;
     renderer.drawText(CHINESE_CHESS_FONT_ID, gx, cy - labelH / 2, labelText, true);
     renderer.drawText(kStatValueFont, gx + labelW + gap, cy - valH / 2 - 2, timeBuf);
 
@@ -652,7 +672,7 @@ void ChineseChessGameActivity::drawInfoPanel() {
       constexpr int triW = 8;
       constexpr int triH = 12;
       const int tx = xLeft + 10;
-      const int ty = statY + (statH - triH) / 2;
+      const int ty = statY + (INFO_PANEL_H - triH) / 2;
       const int xs[3] = {tx, tx + triW, tx};
       const int ys[3] = {ty, ty + triH / 2, ty + triH};
       renderer.fillPolygon(xs, ys, 3, true);
@@ -666,22 +686,21 @@ void ChineseChessGameActivity::drawInfoPanel() {
 // ---------- Mode line ----------
 
 void ChineseChessGameActivity::drawModeLine() {
-  const int y = MODE_LINE_Y;
-  if (mode == ChineseChessMode::VsAi && aiThinkingShown) {
-    const char* label = tr(STR_CHINESE_CHESS_AI_THINKING);
-    const int tw = renderer.getTextWidth(kStatusFont, label);
-    renderer.drawText(kStatusFont, (renderer.getScreenWidth() - tw) / 2, y, label);
-    return;
-  }
-  // Selection hint.
+  const char* label;
   char buf[64];
-  if (hasSelection) {
+  if (mode == ChineseChessMode::VsAi && aiThinkingShown) {
+    label = tr(STR_CHINESE_CHESS_AI_THINKING);
+  } else if (hasSelection) {
     snprintf(buf, sizeof(buf), "%s · %s", tr(STR_CHINESE_CHESS_MOVE), tr(STR_CHINESE_CHESS_CANCEL));
+    label = buf;
   } else {
-    snprintf(buf, sizeof(buf), "%s", tr(STR_CHINESE_CHESS_SELECT));
+    label = tr(STR_CHINESE_CHESS_SELECT);
   }
-  const int tw = renderer.getTextWidth(kStatusFont, buf);
-  renderer.drawText(kStatusFont, (renderer.getScreenWidth() - tw) / 2, y, buf);
+
+  const int contentTop = INFO_PANEL_Y + INFO_PANEL_H;
+  const int contentBottom = renderer.getScreenHeight() - UITheme::getInstance().getMetrics().buttonHintsHeight;
+  const int y = gameCenteredBlockY(contentTop, contentBottom, renderer.getTextHeight(kStatusFont));
+  renderer.drawCenteredText(kStatusFont, y, label);
 }
 
 void ChineseChessGameActivity::drawFooter() {
@@ -689,40 +708,6 @@ void ChineseChessGameActivity::drawFooter() {
       hasSelection ? tr(STR_CHINESE_CHESS_CANCEL) : tr(STR_GAME_GAME_MENU_BTN),
       hasSelection ? tr(STR_CHINESE_CHESS_MOVE) : tr(STR_CHINESE_CHESS_SELECT_BTN), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-}
-
-// ---------- Game menu modal ----------
-
-void ChineseChessGameActivity::renderGameMenu() {
-  constexpr int titleH = 28;
-  constexpr int rowH = 32;
-  const int w = 320;
-  const int h = titleH + rowH * MENU_ITEM_COUNT + 4;
-  const int x = (renderer.getScreenWidth() - w) / 2;
-  const int y = (renderer.getScreenHeight() - h) / 2;
-
-  renderer.fillRect(x, y, w, h, false);
-  renderer.drawRect(x, y, w, h, 2, true);
-
-  const int titleTextH = renderer.getTextHeight(kModalItemFont);
-  renderer.fillRect(x + 2, y + titleH, w - 4, 1, true);
-  renderer.drawText(kModalItemFont, x + 12, y + (titleH - titleTextH) / 2, tr(STR_GAME_GAME_MENU));
-
-  const char* labels[MENU_ITEM_COUNT] = {
-      tr(STR_GAME_RESUME), tr(STR_GOMOKU_UNDO), tr(STR_GOMOKU_RESIGN), tr(STR_GAME_NEW_GAME), tr(STR_GAME_EXIT),
-  };
-
-  const int itemTextH = renderer.getTextHeight(kModalItemFont);
-  const int firstY = y + titleH;
-  for (int i = 0; i < MENU_ITEM_COUNT; i++) {
-    const int rowY = firstY + i * rowH;
-    const bool inverted = (i == menuSel);
-    if (inverted) renderer.fillRect(x + 1, rowY, w - 2, rowH, true);
-    renderer.drawText(kModalItemFont, x + 12, rowY + (rowH - itemTextH) / 2, labels[i], !inverted);
-  }
-
-  const auto hints = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, hints.btn1, hints.btn2, hints.btn3, hints.btn4);
 }
 
 // ---------- Game over screen ----------
@@ -770,6 +755,20 @@ void ChineseChessGameActivity::renderGameOver() {
   snprintf(tail, sizeof(tail), "%s %s · %u", tr(STR_GAME_TIME), timeStr, static_cast<unsigned>(board.moveCount));
   const int tw = renderer.getTextWidth(kStatusFont, tail);
   renderer.drawText(kStatusFont, (sw - tw) / 2, by + bannerH + 12, tail);
+
+  if (mappedInput.hasTouch()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    GUI.drawActionButton(
+        renderer,
+        gameTouchActionRect(renderer.getScreenWidth(), renderer.getScreenHeight(), metrics.contentSidePadding,
+                            metrics.menuSpacing, metrics.menuRowHeight, 0, 2),
+        tr(STR_GOMOKU_AGAIN));
+    GUI.drawActionButton(
+        renderer,
+        gameTouchActionRect(renderer.getScreenWidth(), renderer.getScreenHeight(), metrics.contentSidePadding,
+                            metrics.menuSpacing, metrics.menuRowHeight, 1, 2),
+        tr(STR_GAME_HOME));
+  }
 
   const auto labels = mappedInput.mapLabels(tr(STR_GAME_HOME), tr(STR_GOMOKU_AGAIN), "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

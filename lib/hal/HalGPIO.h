@@ -3,6 +3,10 @@
 #include <Arduino.h>
 #include <InputManager.h>
 
+#include <atomic>
+
+#include "InputModality.h"
+
 // Display SPI pins (custom pins for XteinkX4, not hardware SPI defaults)
 #define EPD_SCLK 8   // SPI Clock
 #define EPD_MOSI 10  // SPI MOSI (Master Out Slave In)
@@ -45,12 +49,17 @@ class HalGPIO {
 
   bool lastUsbConnected = false;
   bool usbStateChanged = false;
+  std::atomic<InputModality> inputModality{InputModality::Touch};
+  bool inputModalityChanged = false;
 
  public:
   enum class DeviceType : uint8_t { X4, X3 };
 
  private:
   DeviceType _deviceType = DeviceType::X4;
+#if FREEINK_DEVICE_MURPHY_M4
+  freeink::MurphyM4Batch _murphyM4Batch = freeink::MurphyM4Batch::Second;
+#endif
 
  public:
   HalGPIO() = default;
@@ -58,7 +67,17 @@ class HalGPIO {
   // Inline device type helpers for cleaner downstream checks
   inline bool deviceIsX3() const { return _deviceType == DeviceType::X3; }
   inline bool deviceIsX4() const { return _deviceType == DeviceType::X4; }
+#if FREEINK_DEVICE_MURPHY_M4
+  freeink::MurphyM4Batch murphyM4Batch() const { return _murphyM4Batch; }
+  bool saveMurphyM4Batch(freeink::MurphyM4Batch batch);
+#endif
   bool isXteinkDevice() const;
+
+  // True when the board's page buttons sit on the left/right screen edges
+  // (X3, X4 Pro) rather than an off-screen vertical rocker. Drives side-hint
+  // placement and the flipped large-step direction in selection activities.
+  // Keyed off the active BoardConfig profile, not the X3/X4 runtime detection.
+  bool hasEdgeSideButtons() const;
 
   // Start button GPIO and setup SPI for screen and SD card
   void begin();
@@ -73,22 +92,54 @@ class HalGPIO {
   unsigned long getHeldTime() const;
   unsigned long getPowerButtonHeldTime() const;
   bool hasTouch() const;
+  // Capacitive Home key reported by the touch controller (X4 Pro). The tap
+  // event fires on release and excludes a long hold.
+  bool hasHomeKey() const;
+  bool wasHomeKeyTapped() const;
+  bool wasHomeKeyLongPressed() const;
   bool wasTouchTap(float& nx, float& ny) const;
   bool wasTouchDown(float& nx, float& ny) const;
+  // Raw release edge, reported even when the contact was not a tap (swipe end,
+  // drag-off). Snapshot builders forward it so interaction routing can clear
+  // pressed state.
+  bool wasTouchReleased() const;
   bool isTouchTapCandidate(float& nx, float& ny, unsigned long& heldMs) const;
   bool isTouchHeldAt(float& nx, float& ny) const;
+  // One-shot long-press, fired by the SDK classifier while the finger is still
+  // down (stationary contact held past its threshold). Position = touch-down
+  // point. Callers that act on it should suppressTouchContact() so the lift
+  // cannot also tap.
+  bool wasTouchLongPress(float& nx, float& ny) const;
+  // Ignore the remainder of the current contact (its continued hold and its
+  // release edge). Self-clears once the contact ends.
+  void suppressTouchContact();
   unsigned long lastTouchHeldMs() const;
   bool wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) const;
   bool wasTouchActivity() const;
+  InputModality lastInputModality() const { return inputModality.load(std::memory_order_relaxed); }
+  bool wasInputModalityChanged() const { return inputModalityChanged; }
+  // Drop the one-shot touch tap/release edge events. Call on activity
+  // transitions so the incoming activity does not re-read a tap the outgoing
+  // one consumed (InputManager clears these in update(), but a pushActivity
+  // runs mid-frame; without this the incoming activity double-activates).
+  void clearTouchTapEvent();
+  void prepareForDeepSleep();
+  bool restoreTouchAfterDisplayReset();
   void setSharedConfirmPowerShortPressEmitsPower(bool enabled);
 
-  // Verify power button was held long enough after wakeup.
+  // Verify that the physical power button remains held through input debounce.
   // Returns true if verification succeeded, false if device should return to sleep.
   // Should only be called when wakeup reason is PowerButton.
+  bool verifyPowerButtonWakeup();
   bool verifyPowerButtonWakeup(uint16_t requiredDurationMs, bool shortPressAllowed);
 
   // Check if USB is connected
   bool isUsbConnected() const;
+
+  // Whether a cold boot with no USB detected can be trusted to mean a held
+  // power button (Xteink-style button-energized rail with reliable USB
+  // detection). When false, cold boots always proceed to a normal boot.
+  bool coldBootImpliesPowerButton() const;
 
   // Returns true once per edge (plug or unplug) since the last update()
   bool wasUsbStateChanged() const;

@@ -1,13 +1,16 @@
 #include "HttpDownloader.h"
 
 #include <Arduino.h>
+#include <HalSystem.h>
 #include <Logging.h>
 #include <Memory.h>
 #include <Stream.h>
 #include <base64.h>
 #include <esp_crt_bundle.h>
 #include <esp_http_client.h>
+#include <esp_wifi.h>
 
+#include <cstdio>
 #include <functional>
 #include <string>
 
@@ -32,6 +35,8 @@ constexpr int HTTP_TX_BUF = 512;
 constexpr int HTTP_TIMEOUT_MS = 60000;
 constexpr size_t READ_CHUNK = 1024;
 constexpr int MAX_REDIRECTS = 5;
+constexpr size_t DEVICE_MODEL_LENGTH_MAX = 32;
+constexpr size_t USER_AGENT_CAPACITY = sizeof("CrossMux--" CROSSPOINT_VERSION) + DEVICE_MODEL_LENGTH_MAX;
 
 struct Sink {
   std::function<bool(const uint8_t*, size_t)> write;  // returns false to abort the transfer
@@ -45,9 +50,27 @@ bool isRedirect(int status) {
   return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
 }
 
+// OtaUpdater.cpp already disables WiFi power-save for firmware downloads, but
+// OPDS feed/book fetches never did despite being able to run just as long for
+// a large category. Modem sleep periodically powers the radio down between
+// DTIM beacon intervals, which can drop or stall packets mid-transfer -- more
+// likely to be hit the longer a transfer takes, so small feeds mostly get
+// away with it while a large category consistently doesn't.
+struct WifiPowerSaveGuard {
+  WifiPowerSaveGuard() {
+    esp_err_t err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (err != ESP_OK) LOG_ERR("HTTP", "Failed to disable WiFi power-save: %d", err);
+  }
+  ~WifiPowerSaveGuard() {
+    esp_err_t err = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    if (err != ESP_OK) LOG_ERR("HTTP", "Failed to restore WiFi power-save: %d", err);
+  }
+};
+
 #if defined(FREEINK_NET_WOLFSSL)
 HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std::string& username,
-                                         const std::string& password, Sink& sink) {
+                                         const std::string& password, const char* userAgent, Sink& sink) {
+  WifiPowerSaveGuard psGuard;
   std::string url = startUrl;
 
   for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
@@ -61,7 +84,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     // setUserAgent replaces SecureHttpClient's built-in UA; addHeader would
     // append a second User-Agent header, which strict servers reject (aiohttp
     // answers 400 "Duplicate 'User-Agent' header found").
-    http.setUserAgent("CrossPoint-ESP32-" CROSSPOINT_VERSION);
+    http.setUserAgent(userAgent);
     if (!username.empty() && !password.empty()) {
       const std::string credentials = username + ":" + password;
       const String encoded = base64::encode(credentials.c_str());
@@ -116,7 +139,8 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
 // that ends early as ESP_ERR_HTTP_INCOMPLETE_DATA, whereas the read loop streams
 // large/slow files and surfaces a short read directly.
 HttpDownloader::DownloadError runGet(const std::string& url, const std::string& username, const std::string& password,
-                                     Sink& sink) {
+                                     const char* userAgent, Sink& sink) {
+  WifiPowerSaveGuard psGuard;
   esp_http_client_config_t config = {};
   config.url = url.c_str();
   config.buffer_size = HTTP_RX_BUF;
@@ -137,7 +161,7 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     return HttpDownloader::HTTP_ERROR;
   }
 
-  esp_http_client_set_header(client, "User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
+  esp_http_client_set_header(client, "User-Agent", userAgent);
   if (!username.empty() && !password.empty()) {
     // Preemptive Basic auth, like the prior addHeader; don't wait for a 401.
     const std::string credentials = username + ":" + password;
@@ -221,10 +245,17 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
 // WiFiClient inside runGetWolf, so this is safe for non-TLS targets too.
 HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::string& username,
                                            const std::string& password, Sink& sink) {
+  char userAgent[USER_AGENT_CAPACITY];
+  const int userAgentLength =
+      snprintf(userAgent, sizeof(userAgent), "CrossMux-%s-" CROSSPOINT_VERSION, HalSystem::getDeviceModel());
+  if (userAgentLength < 0 || static_cast<size_t>(userAgentLength) >= sizeof(userAgent)) {
+    LOG_ERR("HTTP", "User-Agent exceeds %zu bytes", sizeof(userAgent));
+    return HttpDownloader::HTTP_ERROR;
+  }
 #if defined(FREEINK_NET_WOLFSSL)
-  return runGetWolf(url, username, password, sink);
+  return runGetWolf(url, username, password, userAgent, sink);
 #else
-  return runGet(url, username, password, sink);
+  return runGet(url, username, password, userAgent, sink);
 #endif
 }
 }  // namespace

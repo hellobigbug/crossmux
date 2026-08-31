@@ -10,6 +10,8 @@ Reads YAML files from a translations directory (one file per language) and gener
 Each YAML file must contain:
   _language_name: "Native Name"     (e.g. "Español")
   _language_code: "ENUM_NAME"       (e.g. "ES")
+  _order: "N"                       (e.g. "1"; historical metadata, unused)
+  _bcp47: "tag"                     (e.g. "es"; drives Language enum order)
   STR_KEY: "translation text"
 
 The English file is the reference. Missing keys in other languages are
@@ -114,15 +116,16 @@ def load_translations(
     translations_dir: str,
     verbose: bool = False,
     only_languages: Optional[Set[str]] = None,
-) -> Tuple[List[str], List[str], List[str], Dict[str, List[str]], List[Set[str]]]:
+) -> Tuple[List[str], List[str], List[str], List[str], Dict[str, List[str]], List[Set[str]]]:
     """
     Read every YAML file in *translations_dir* and return:
         language_codes   e.g. ["EN", "ES", ...]
         language_names   e.g. ["English", "Español", ...]
+        language_bcp47   e.g. ["en", "es", ...]
         string_keys      ordered list of STR_* keys (from English)
         translations     {key: [translation_per_language]}
 
-    English is always first;
+    English is always first; the rest are sorted by _bcp47.
 
     When *only_languages* is provided, keep only files whose _language_code
     appears in the set (case-insensitive). English is always retained as the
@@ -166,48 +169,51 @@ def load_translations(
     if english_file is None:
         raise ValueError("No YAML file with _language_code: EN found")
 
-    duplicate_orders: Dict[str, List[str]] = {}
-    order_to_files: Dict[str, List[str]] = {}
     for fname, data in parsed.items():
-        order = data.get("_order")
-        if not order:
-            continue
-        order_to_files.setdefault(order, []).append(fname)
+        if not data.get("_bcp47"):
+            raise ValueError(f"{fname}: missing _bcp47")
 
-    for order, files in order_to_files.items():
-        if len(files) > 1:
-            duplicate_orders[order] = sorted(files)
+    def _check_unique(field: str) -> None:
+        """Raise if any two files share the same value for *field* (e.g. "_order", "_bcp47")."""
+        files_by_value: Dict[str, List[str]] = {}
+        for fname, data in parsed.items():
+            value = data.get(field)
+            if not value:
+                continue
+            files_by_value.setdefault(value, []).append(fname)
 
-    if duplicate_orders:
-        duplicate_messages = [
-            f"_order {order}: {', '.join(files)}"
-            for order, files in sorted(
-                duplicate_orders.items(), key=lambda item: int(item[0])
+        duplicates = {value: sorted(files) for value, files in files_by_value.items() if len(files) > 1}
+        if duplicates:
+            duplicate_messages = [
+                f"{field} {value}: {', '.join(files)}" for value, files in sorted(duplicates.items())
+            ]
+            raise ValueError(
+                f"Duplicate {field} values found:\n  "
+                + "\n  ".join(duplicate_messages)
+                + f"\nEach {field} value must be unique to ensure a deterministic language order."
             )
-        ]
-        raise ValueError(
-            "Duplicate _order values found:\n  "
-            + "\n  ".join(duplicate_messages)
-            + "\nEach _order value must be unique to ensure a deterministic language order."
-        )
 
-    # Order: English first, then by _order metadata (falls back to filename)
-    def sort_key(fname: str) -> Tuple[int, int, str]:
-        """English always first (0), then by _order, then by filename."""
+    _check_unique("_order")
+    _check_unique("_bcp47")
+
+    # Order: English first (enum value 0), then by _bcp47 tag alphabetically.
+    # This assigns the Language enum ordinal and also drives the visible
+    # Settings menu order (see SORTED_LANGUAGE_INDICES). It has no effect on
+    # stored user preferences, since settings.json persists the
+    # _language_code string, not the ordinal. _order is retained as metadata
+    # and still validated for uniqueness, but no longer drives enum assignment.
+    def sort_key(fname: str) -> Tuple[int, str]:
+        """English always first (0), then by BCP47 tag."""
         if fname == english_file:
-            return (0, 0, fname)
-        order = parsed[fname].get("_order", "999")
-        try:
-            order_int = int(order)
-        except ValueError:
-            order_int = 999
-        return (1, order_int, fname)
+            return (0, "")
+        return (1, parsed[fname]["_bcp47"])
 
     ordered_files = sorted(parsed, key=sort_key)
 
     # Extract metadata
     language_codes: List[str] = []
     language_names: List[str] = []
+    language_bcp47: List[str] = []
     for fname in ordered_files:
         data = parsed[fname]
         code = data.get("_language_code")
@@ -216,6 +222,7 @@ def load_translations(
             raise ValueError(f"{fname}: missing _language_code or _language_name")
         language_codes.append(code)
         language_names.append(name)
+        language_bcp47.append(data["_bcp47"])
 
     # String keys come from English (order matters)
     english_data = parsed[english_file]
@@ -259,7 +266,7 @@ def load_translations(
 
     if verbose:
         print(f"Loaded {len(language_codes)} languages, {len(string_keys)} string keys")
-    return language_codes, language_names, string_keys, translations, inherited_sets
+    return language_codes, language_names, language_bcp47, string_keys, translations, inherited_sets
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +465,7 @@ def compute_character_set(translations: Dict[str, List[str]], lang_index: int) -
 def generate_keys_header(
     languages: List[str],
     language_names: List[str],
+    language_bcp47: List[str],
     string_keys: List[str],
     output_path: str,
     verbose: bool = False,
@@ -482,10 +490,11 @@ def generate_keys_header(
     lines.append("")
 
     # Language enum
-    lines.append("// Language enum")
+    lines.append("// Language enum (ordered by _bcp47, English first)")
     lines.append("enum class Language : uint8_t {")
-    for i, lang in enumerate(languages):
-        lines.append(f"  {lang} = {i},")
+    code_width = max(len(lang) for lang in languages)
+    for i, (lang, bcp47) in enumerate(zip(languages, language_bcp47)):
+        lines.append(f"  {lang:<{code_width}} = {i},  // {bcp47}")
     lines.append("  _COUNT")
     lines.append("};")
     lines.append("")
@@ -547,16 +556,16 @@ def generate_keys_header(
     lines.append("")
 
     # Sorted language indices for display order
-    # (English first, then by language code alphabetically)
+    # (English first, then by _bcp47 tag alphabetically)
     english_idx = languages.index("EN")
     rest = sorted(
         (i for i in range(len(languages)) if i != english_idx),
-        key=lambda i: languages[i],
+        key=lambda i: language_bcp47[i],
     )
     sorted_indices = [english_idx] + rest
-    lines.append("// Sorted language indices by code (auto-generated by gen_i18n.py)")
+    lines.append("// Sorted language indices by _bcp47 (auto-generated by gen_i18n.py)")
     for rank, idx in enumerate(sorted_indices):
-        lines.append(f"//   {rank:>2}: {languages[idx]:<4} {language_names[idx]}")
+        lines.append(f"//   {rank:>2}: {languages[idx]:<4} {language_bcp47[idx]:<8} {language_names[idx]}")
     lines.append(
         "constexpr uint8_t SORTED_LANGUAGE_INDICES[] = {"
         f"{', '.join(str(i) for i in sorted_indices)}"
@@ -571,10 +580,8 @@ def generate_keys_header(
 
     # V1 language.bin migration table -- frozen enum order from commit 2f969a9.
     # Maps the old uint8_t index stored on disk to the current Language enum.
-    # When a build excludes some languages (e.g. ENABLE_CHINESE_VERSION strips
-    # everything except EN/ZH_CN), absent codes fall back to Language::EN so the
-    # table still compiles. On-device, a user whose stored language is no longer
-    # available simply lands back on English.
+    # Explicit command-line subset generation may omit old codes; firmware
+    # builds emit the complete language table.
     v1_codes = [
         "EN", "ES", "FR", "DE", "CS", "PT", "RU", "SV", "RO", "CA", "UK",
         "BE", "IT", "PL", "FI", "DA", "NL", "TR", "KK", "HU", "LT", "SI",
@@ -751,6 +758,7 @@ def generate_strings_cpp(
 def _print_language_table(
     language_codes: List[str],
     language_names: List[str],
+    language_bcp47: List[str],
     inherited_sets: List[Set[str]],
     string_keys: List[str],
     unused_keys: Set[str],
@@ -758,20 +766,20 @@ def _print_language_table(
 ) -> None:
     """Print a per-language summary table."""
     total = len(string_keys)
-    headers = ("Language", "Code", "Own", "Fallback", "Unused", "Data (B)")
+    headers = ("Language", "Code", "BCP47", "Own", "Fallback", "Unused", "Data (B)")
 
     rows = []
-    for code, name, inherited, size in zip(
-        language_codes, language_names, inherited_sets, data_sizes
+    for code, name, bcp47, inherited, size in zip(
+        language_codes, language_names, language_bcp47, inherited_sets, data_sizes
     ):
         own = total - len(inherited)
         fallback = len(inherited)
         # strings this language translated but the code never calls
         unused = len(unused_keys - inherited)
-        rows.append((name, code, str(own), str(fallback), str(unused), str(size)))
+        rows.append((name, code, bcp47, str(own), str(fallback), str(unused), str(size)))
 
-    # EN first, then alphabetically by ISO code
-    rows.sort(key=lambda r: (0 if r[1] == "EN" else 1, r[1]))
+    # EN first, then alphabetically by _bcp47 (matches the Language enum order)
+    rows.sort(key=lambda r: (0 if r[1] == "EN" else 1, r[2]))
 
     col_widths = [len(h) for h in headers]
     for row in rows:
@@ -884,7 +892,7 @@ def main(
             print(
                 f"Restricting build to languages: {', '.join(sorted(only_languages))} (plus EN fallback)"
             )
-        languages, language_names, string_keys, translations, inherited_sets = (
+        languages, language_names, language_bcp47, string_keys, translations, inherited_sets = (
             load_translations(translations_dir, verbose, only_languages)
         )
 
@@ -928,6 +936,7 @@ def main(
         _print_language_table(
             languages,
             language_names,
+            language_bcp47,
             inherited_sets,
             string_keys,
             unused_set,
@@ -951,7 +960,7 @@ def main(
 
         out = Path(output_dir)
         generate_keys_header(
-            languages, language_names, string_keys, str(out / "I18nKeys.h"), verbose
+            languages, language_names, language_bcp47, string_keys, str(out / "I18nKeys.h"), verbose
         )
         generate_strings_header(
             languages, language_names, str(out / "I18nStrings.h"), verbose
@@ -1038,57 +1047,7 @@ if __name__ == "__main__":
 else:
     try:
         Import("env")
-
-        # Detect ENABLE_CHINESE_VERSION via multiple sources because the flag
-        # may not yet be normalized into CPPDEFINES at extra_script-pre time.
-        # PlatformIO populates CPPDEFINES later in the build graph, but the
-        # raw "-D…" tokens live in BUILD_FLAGS (after $-substitution).
-        #
-        # Match by token, not substring: a flag like
-        # -DSOMETHING_ENABLE_CHINESE_VERSION_PROBE=1 must NOT trigger the
-        # Chinese-only path.
-        flag = "ENABLE_CHINESE_VERSION"
-
-        def _build_flags_has(flag_name: str, expanded_str: str) -> bool:
-            """True iff -D<flag_name> (optionally with =value) appears as a
-            whole token in `expanded_str`. -U flips it off (last wins)."""
-            enabled = False
-            for tok in expanded_str.split():
-                if tok == f"-D{flag_name}" or tok.startswith(f"-D{flag_name}="):
-                    enabled = True
-                elif tok == f"-U{flag_name}":
-                    enabled = False
-            return enabled
-
-        only = None
-        try:
-            sc_env = env  # type: ignore[name-defined]
-            env_name = sc_env.get("PIOENV", "?")
-
-            # 1) Expanded BUILD_FLAGS string (resolves ${base.build_flags}).
-            expanded = sc_env.subst("$BUILD_FLAGS") or ""
-
-            # 2) Raw CPPDEFINES list (catches Append() additions from other
-            #    pre-scripts; tuples or bare names). Compare against the bare
-            #    define name, not a substring.
-            defines = sc_env.get("CPPDEFINES", []) or []
-            define_names = {
-                d if isinstance(d, str) else (d[0] if d else "")
-                for d in defines
-            }
-
-            if _build_flags_has(flag, expanded) or flag in define_names:
-                only = {"ZH_CN"}
-                print(
-                    f"[gen_i18n] {flag} detected (env={env_name}); "
-                    f"restricting i18n tables to EN + ZH_CN"
-                )
-            else:
-                print(f"[gen_i18n] {flag} not set (env={env_name}); building full i18n")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[gen_i18n] flag detection failed ({exc}); building full i18n")
-            only = None
-
-        main(strip_unused=True, only_languages=only)
+        print("[gen_i18n] unified firmware; building full i18n")
+        main(strip_unused=True)
     except NameError:
         pass

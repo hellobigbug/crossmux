@@ -1,25 +1,32 @@
 #pragma once
+#include <atomic>
 #include <functional>
+#include <memory>
 #include <vector>
 
 #include "./FileBrowserActivity.h"
+#include "RecentBooksStore.h"
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 
-struct RecentBook;
 struct Rect;
 
 class HomeActivity final : public Activity {
+  enum class CarouselUpdateScope { None, MenuOnly, Full };
+
   ButtonNavigator buttonNavigator;
   int selectorIndex = 0;
   bool recentsLoading = false;
   bool recentsLoaded = false;
   bool firstRenderDone = false;
   bool hasOpdsServers = false;
-  bool coverRendered = false;      // Track if cover has been rendered once
-  bool coverBufferStored = false;  // Track if cover buffer is stored
-  uint8_t* coverBuffer = nullptr;  // HomeActivity's own buffer for cover image
-  size_t coverBufferSize = 0;      // Bytes allocated to coverBuffer
+  int lastCarouselBookIndex = 0;
+  bool coverRendered = false;           // Track if cover has been rendered once
+  bool coverBufferStored = false;       // Track if cover buffer is stored
+  bool coverBufferUnavailable = false;  // Stop retrying an optional snapshot after OOM
+  std::atomic<CarouselUpdateScope> carouselUpdateScope{CarouselUpdateScope::None};
+  std::unique_ptr<uint8_t[]> coverBuffer;  // HomeActivity's own buffer for cover image
+  size_t coverBufferSize = 0;              // Bytes allocated to coverBuffer
   // Logical rect last passed to drawRecentBookCover. The cover snapshot only
   // needs to cover this region, not the entire framebuffer, so we cache the
   // tile instead of all 48 KB. Set in render() before the call.
@@ -35,34 +42,6 @@ class HomeActivity final : public Activity {
   // from immediately punching the user into Standby.
   bool sawBackPressInActivity = false;
 
-  // Convert HomeMenuItem to menu index (used in onEnter)
-  static int menuItemToIndex(HomeMenuItem item, bool hasOpdsUrl) {
-    int i = 0;
-    if (item == HomeMenuItem::FILE_BROWSER) return i;
-    ++i;
-    if (item == HomeMenuItem::RECENTS) return i;
-    ++i;
-    if (item == HomeMenuItem::OPDS_BROWSER) return hasOpdsUrl ? i : 0;
-    if (hasOpdsUrl) ++i;
-    if (item == HomeMenuItem::FILE_TRANSFER) return i;
-    ++i;
-    if (item == HomeMenuItem::SETTINGS_MENU) return i;
-    ++i;
-    if (item == HomeMenuItem::APPS) return i;
-    return 0;
-  }
-
-  // Convert menu index to HomeMenuItem (used in loop)
-  static HomeMenuItem indexToMenuItem(int idx, bool hasOpdsUrl) {
-    int i = 0;
-    if (idx == i++) return HomeMenuItem::FILE_BROWSER;
-    if (idx == i++) return HomeMenuItem::RECENTS;
-    if (hasOpdsUrl && idx == i++) return HomeMenuItem::OPDS_BROWSER;
-    if (idx == i++) return HomeMenuItem::FILE_TRANSFER;
-    if (idx == i++) return HomeMenuItem::SETTINGS_MENU;
-    if (idx == i) return HomeMenuItem::APPS;
-    return HomeMenuItem::NONE;
-  }
   void onSelectBook(const std::string& path);
   void onFileBrowserOpen();
   void onRecentsOpen();
@@ -73,6 +52,10 @@ class HomeActivity final : public Activity {
   void onStandbyOpen();
 
   int getMenuItemCount() const;
+  static constexpr bool canRenderCarouselMenuOnly(bool isCarousel, bool recentsLoaded, CarouselUpdateScope scope) {
+    return isCarousel && recentsLoaded && scope == CarouselUpdateScope::MenuOnly;
+  }
+  void requestCarouselUpdate(CarouselUpdateScope scope);
   bool storeCoverBuffer();    // Store frame buffer for cover image
   bool restoreCoverBuffer();  // Restore frame buffer from stored cover
   void freeCoverBuffer();     // Free the stored cover buffer

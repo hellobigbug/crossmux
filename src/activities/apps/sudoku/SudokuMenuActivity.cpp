@@ -53,6 +53,13 @@ void SudokuMenuActivity::buildItems() {
 
 void SudokuMenuActivity::loop() {
   if (showingStats) {
+    int touchX = 0;
+    int touchY = 0;
+    if (mappedInput.wasScreenTapped(touchX, touchY)) {
+      showingStats = false;
+      requestUpdate();
+      return;
+    }
     if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
         mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       showingStats = false;
@@ -62,6 +69,14 @@ void SudokuMenuActivity::loop() {
   }
 
   const int n = static_cast<int>(items.size());
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int listTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int listHeight = renderer.getScreenHeight() - listTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  if (handleListTouch(selected, n, listTop, listHeight, true) == ListTouchResult::Activated) {
+    onSelect();
+    return;
+  }
+
   buttonNavigator.onNext([this, n] {
     selected = ButtonNavigator::nextIndex(selected, n);
     requestUpdate();
@@ -83,12 +98,11 @@ void SudokuMenuActivity::onSelect() {
   const Item& it = items[selected];
   switch (it.kind) {
     case ItemKind::Continue:
-      activityManager.replaceActivity(std::make_unique<SudokuGameActivity>(renderer, mappedInput, it.difficulty, true));
+      activityManager.replaceActivityWith<SudokuGameActivity>(it.difficulty, true);
       return;
     case ItemKind::NewGame:
       SudokuStore::clear();
-      activityManager.replaceActivity(
-          std::make_unique<SudokuGameActivity>(renderer, mappedInput, it.difficulty, false));
+      activityManager.replaceActivityWith<SudokuGameActivity>(it.difficulty, false);
       return;
     case ItemKind::Stats:
       showingStats = true;

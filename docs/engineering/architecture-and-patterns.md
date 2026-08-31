@@ -11,7 +11,7 @@
   * lib/hal/: Hardware Abstraction Layer (HalDisplay, HalGPIO, HalStorage)
   * lib/I18n/: Internationalization (translations in `translations/*.yaml`, generated string tables)
 * src/activities/: UI logic using the Activity Lifecycle (onEnter, loop, onExit)
-* open-x4-sdk/: Low-level SDK (EInkDisplay, InputManager, BatteryMonitor, SDCardManager)
+* freeink-sdk/: Low-level SDK (FreeInkDisplay, InputManager, BatteryMonitor, SDCardManager)
 * .crosspoint/: SD-based binary cache for EPUB metadata and pre-rendered layout sections
 
 ## Hardware Abstraction Layer (HAL)
@@ -91,6 +91,7 @@ void enterNewActivity(Activity* activity) {
 - Any memory allocated in `onEnter()` MUST be freed in `onExit()`
 - FreeRTOS tasks MUST be deleted in `onExit()` before activity destruction
 - Member `FsFile` handles MUST be closed in `onExit()` (local `FsFile` variables auto-close via destructor)
+- `ActivityManager` calls `onExit()` while already holding `RenderLock`; never acquire a second render lock there
 
 **Activity Pattern**:
 ```cpp
@@ -121,16 +122,13 @@ The main loop updates mapped input once per frame before
 
 **Source**: [src/main.cpp:40-115](../../src/main.cpp)
 
-**All fonts are loaded as global static objects** at firmware startup:
-- Noto Serif: 12, 14, 16, 18pt (4 styles each: regular, bold, italic, bold-italic)
-- Noto Sans: 12, 14, 16, 18pt (4 styles each)
-- Ubuntu UI fonts: 10, 12pt (2 styles)
+**Built-in fonts are global static objects** at firmware startup:
+- International UI fonts: 8, 10, 12pt
+- Simplified-Chinese UI fallbacks: 8, 10, 12pt
+- Offline reader fallback: 12pt; other sizes and styles use SD `.cpfont`
 
-OpenDyslexic is no longer a flash builtin — it moved to an SD-card font
-(`lib/EpdFont/scripts/sd-fonts.yaml`). The Chinese build reuses the legacy
-`opendyslexic*` font slots in `src/main.cpp` as aliases to the embedded CJK faces.
-
-**Total**: ~80+ global `EpdFont` and `EpdFontFamily` objects
+OpenDyslexic and the broad Noto reader families live in the SD font catalog
+(`lib/EpdFont/scripts/sd-fonts.yaml`). Legacy IDs resolve to the 12pt fallback.
 
 **Compilation Flag**:
 ```cpp

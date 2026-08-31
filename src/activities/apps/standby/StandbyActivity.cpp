@@ -9,6 +9,7 @@
 #include <esp_system.h>
 #include <esp_wifi.h>
 
+#include <algorithm>
 #include <string>
 
 #include "../../../util/PaginationDots.h"
@@ -16,10 +17,10 @@
 #include "../../ActivityResult.h"
 #include "../../network/WifiSelectionActivity.h"
 #include "CrossPointSettings.h"
+#include "NetworkStartup.h"
 #ifdef ENABLE_CHINESE_VERSION
 #include "ChineseCalendarFace.h"
 #endif
-#include "AirPageFace.h"
 #include "SloppyClockFace.h"
 #include "StandbyTime.h"
 #include "WifiCredentialStore.h"
@@ -30,6 +31,7 @@ namespace {
 
 constexpr uint32_t kWifiTimeoutMs = 15000u;  // Same as WifiSelectionActivity
 constexpr uint32_t kNtpTimeoutMs = 12000u;
+constexpr uint32_t kSyncDelayMs = 1500u;
 
 // Face factory table. Add new faces by appending a row here and including the
 // corresponding header above. Each entry also declares an isAvailable()
@@ -47,9 +49,6 @@ constexpr FaceEntry kFaces[] = {
     {[]() -> std::unique_ptr<StandbyFace> { return makeUniqueNoThrow<ChineseCalendarFace>(); },
      [](int sw, int sh) { return sh > sw; }},  // portrait only
 #endif
-    // AirPage: cloud-rendered image pages. Available in every build; sits after
-    // the Chinese calendar entry when that is compiled in, else after the clock.
-    {[]() -> std::unique_ptr<StandbyFace> { return makeUniqueNoThrow<AirPageFace>(); }, [](int, int) { return true; }},
 };
 constexpr uint8_t kFaceCount = static_cast<uint8_t>(sizeof(kFaces) / sizeof(kFaces[0]));
 
@@ -122,17 +121,26 @@ void StandbyActivity::onEnter() {
   currentFace_->onEnter();
   mode_ = DisplayMode::Normal;
   lastInputMs_ = millis();
-  startTimeSync();
+  if (!TimeUtils::isClockValid() && SETTINGS.clockAutoSync) {
+    syncState_ = SyncState::Delayed;
+    syncStartMs_ = millis();
+  }
   requestUpdate();
 }
 
 void StandbyActivity::onExit() {
-  if (syncState_ != SyncState::Idle) {
-    WiFi.disconnect(false);
-    delay(100);
-    WiFi.mode(WIFI_OFF);
-    syncState_ = SyncState::Idle;
+  switch (syncState_) {
+    case SyncState::Idle:
+    case SyncState::Delayed:
+      break;
+    case SyncState::WifiConnecting:
+    case SyncState::ClockSyncing:
+      WiFi.disconnect(false);
+      delay(100);
+      WiFi.mode(WIFI_OFF);
+      break;
   }
+  syncState_ = SyncState::Idle;
   if (currentFace_) {
     currentFace_->onExit();
     currentFace_.reset();
@@ -171,6 +179,7 @@ void StandbyActivity::startTimeSync() {
   // Another activity (e.g. Settings → WiFi) may have already connected the
   // device. Skip our own WiFi.begin in that case and request a clock sync.
   if (WiFi.status() == WL_CONNECTED) {
+    NetworkStartup::prepare(renderer);
     LOG_DBG("STANDBY", "WiFi already connected, skipping silent attempt");
     beginClockSync();
     return;
@@ -195,13 +204,13 @@ bool StandbyActivity::trySilentWifiConnect() {
   std::string pass;
   {
     RenderLock lock(*this);
-    if (WIFI_STORE.getCredentials().empty()) WIFI_STORE.loadFromFile();
-    const std::string& last = WIFI_STORE.getLastConnectedSsid();
+    if (WIFI_STORE.getCredentialCount() == 0) WIFI_STORE.loadFromFile();
+    const std::string last = WIFI_STORE.getLastConnectedSsid();
     if (last.empty()) {
       LOG_DBG("STANDBY", "No lastConnectedSsid for silent connect");
       return false;
     }
-    const WifiCredential* cred = WIFI_STORE.findCredential(last);
+    const auto cred = WIFI_STORE.findCredential(last);
     if (!cred) {
       LOG_DBG("STANDBY", "lastConnectedSsid '%s' has no saved credential", last.c_str());
       return false;
@@ -211,7 +220,7 @@ bool StandbyActivity::trySilentWifiConnect() {
   }
 
   WiFi.persistent(false);
-  WiFi.mode(WIFI_STA);
+  NetworkStartup::setMode(renderer, WIFI_STA);
   // Fresh-slate disconnect (radio off + erase cached AP) so the next begin()
   // latches the exact creds we just loaded, not whatever the radio retained
   // from a previous session. The disconnect(false) form used by the teardown
@@ -279,6 +288,11 @@ void StandbyActivity::pumpTimeSync() {
   switch (syncState_) {
     case SyncState::Idle:
       return;
+    case SyncState::Delayed:
+      if (elapsed < kSyncDelayMs) return;
+      syncState_ = SyncState::Idle;
+      startTimeSync();
+      return;
     case SyncState::WifiConnecting: {
       const wl_status_t status = WiFi.status();
       if (status == WL_CONNECTED) {
@@ -340,14 +354,43 @@ void StandbyActivity::finishTimeSync() {
 
 void StandbyActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    // A face with a modal overlay (airpage mode menu) keeps Back for itself:
-    // it closes the overlay instead of leaving Standby.
-    if (currentFace_ && currentFace_->wantsExclusiveInput()) {
-      lastInputMs_ = millis();
-      if (currentFace_->handleBack()) requestUpdate();
+    activityManager.goHome();
+    return;
+  }
+
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe != MappedInputManager::SwipeDir::None) {
+    lastInputMs_ = millis();
+    if (mode_ == DisplayMode::Immersive) {
+      mode_ = DisplayMode::Normal;
+      requestUpdate();
       return;
     }
-    activityManager.goHome();
+    if (swipe == MappedInputManager::SwipeDir::Left) {
+      switchFace(1);
+    } else if (swipe == MappedInputManager::SwipeDir::Right) {
+      switchFace(-1);
+    } else if (currentFace_) {
+      if (swipe == MappedInputManager::SwipeDir::Up) {
+        currentFace_->onPageNext();
+      } else {
+        currentFace_->onPagePrev();
+      }
+      requestUpdate();
+    }
+    return;
+  }
+
+  int touchX = 0;
+  int touchY = 0;
+  if (mappedInput.wasScreenTapped(touchX, touchY)) {
+    lastInputMs_ = millis();
+    if (mode_ == DisplayMode::Immersive) {
+      mode_ = DisplayMode::Normal;
+    } else {
+      inverseMode_ = !inverseMode_;
+    }
+    requestUpdate();
     return;
   }
 
@@ -378,8 +421,6 @@ void StandbyActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Left) ||
       mappedInput.wasReleased(MappedInputManager::Button::Right)) {
     lastInputMs_ = millis();
-    // While a face's modal overlay is open, Left/Right do not switch faces.
-    if (currentFace_ && currentFace_->wantsExclusiveInput()) return;
     if (mode_ == DisplayMode::Immersive) {
       mode_ = DisplayMode::Normal;
       requestUpdate();
@@ -401,19 +442,10 @@ void StandbyActivity::loop() {
     return;
   }
 
-  // Confirm: toggle inverse (black background / white content) regardless of
-  // Normal vs. Immersive. invertScreen() flips the whole framebuffer right
-  // before displayBuffer(), so title / battery / face dots / face content all
-  // invert together — no per-face plumbing required.
+  // Confirm toggles inverse (black background / white content) regardless of
+  // Normal vs. Immersive.
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     lastInputMs_ = millis();
-    // Interactive faces (airpage) own Confirm: it opens their mode menu (or
-    // selects a menu row when their overlay is open) rather than the global
-    // inverse mode.
-    if (currentFace_ && currentFace_->isInteractive()) {
-      if (currentFace_->handleConfirm()) requestUpdate();
-      return;
-    }
     inverseMode_ = !inverseMode_;
     requestUpdate();
     return;
@@ -428,11 +460,8 @@ void StandbyActivity::loop() {
   // the time. The deep-sleep timer is short-circuited in main.cpp via
   // preventAutoSleep(); downclocking is unaffected because main.cpp only
   // resets lastActivityTime on real user input, not on preventAutoSleep().
-  // Interactive faces (airpage) stay in Normal mode so they keep their chrome
-  // (QR title/dots) and receive Up/Down/Confirm on the first press.
-  const bool interactive = currentFace_ && currentFace_->isInteractive();
   const uint32_t idle = millis() - lastInputMs_;
-  if (!interactive && mode_ == DisplayMode::Normal && idle >= 5000u) {
+  if (mode_ == DisplayMode::Normal && idle >= 5000u) {
     mode_ = DisplayMode::Immersive;
     requestUpdate();
   }
@@ -448,21 +477,27 @@ void StandbyActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int sw = renderer.getScreenWidth();
   const int sh = renderer.getScreenHeight();
+  int viewTop = 0;
+  int viewRight = 0;
+  int viewBottom = 0;
+  int viewLeft = 0;
+  renderer.getOrientedViewableTRBL(&viewTop, &viewRight, &viewBottom, &viewLeft);
+  const Rect faceViewport{viewLeft, viewTop, sw - viewLeft - viewRight, sh - viewTop - viewBottom};
+  const int overlayTop = std::max(metrics.topPadding, viewTop);
 
   renderer.clearScreen();
 
-  // Face renders into the full screen regardless of mode. Chrome (title, battery,
-  // dot indicator) is drawn as overlay on top in Normal mode only, so the face
-  // content doesn't re-flow when transitioning to Immersive.
-  currentFace_->render(renderer, Rect{0, 0, sw, sh});
+  // Face renders inside the physically viewable screen regardless of mode. Normal
+  // chrome is overlaid without reflow; the unsynced warning remains in Immersive.
+  {
+    const GfxRenderer::ClipScope clip(renderer, faceViewport.x, faceViewport.y, faceViewport.width,
+                                      faceViewport.height);
+    currentFace_->render(renderer, faceViewport);
+  }
 
-  // Interactive faces (airpage) that render full-screen (image view) paint
-  // edge-to-edge with no chrome in a single BW pass — not gated on the 5s-idle
-  // Immersive transition. Their QR / loading views fall through to the
-  // Normal-mode chrome path below.
-  if (currentFace_->isInteractive() && currentFace_->rendersFullScreen()) {
-    renderer.displayBuffer();
-    return;
+  const bool clockValid = TimeUtils::isClockValid();
+  if (!clockValid) {
+    UITheme::drawCenteredText(renderer, faceViewport, SMALL_FONT_ID, overlayTop, tr(STR_STANDBY_SYNCING));
   }
 
   if (mode_ != DisplayMode::Normal) {
@@ -472,20 +507,21 @@ void StandbyActivity::render(RenderLock&&) {
     // image. Only fires in Immersive — Normal-mode navigation needs the
     // ~300-500ms FAST_REFRESH and can't afford the ~2s gray LUT. inverseMode_
     // short-circuits because invertScreen is BW-only and mixes poorly with gray.
-    if (currentFace_->wantsGrayscale() && !inverseMode_) applyGrayscalePass(sw, sh);
+    if (currentFace_->wantsGrayscale() && !inverseMode_) applyGrayscalePass(faceViewport);
     return;
   }
 
   // Top-center face title (or sync state). Small font, no chrome container,
   // no separator line — Apple Standby-style minimal overlay.
-  const char* title =
-      (syncState_ != SyncState::Idle) ? tr(STR_STANDBY_SYNCING) : I18n::getInstance().get(currentFace_->titleId());
-  renderer.drawCenteredText(SMALL_FONT_ID, metrics.topPadding, title, /*black=*/true);
+  if (clockValid) {
+    UITheme::drawCenteredText(renderer, faceViewport, SMALL_FONT_ID, overlayTop,
+                              I18n::getInstance().get(currentFace_->titleId()));
+  }
 
   // Top-right battery icon (no percentage text). Reuses BaseTheme::drawBatteryRight.
   constexpr int kBatW = 16;
   constexpr int kBatH = 12;
-  GUI.drawBatteryRight(renderer, Rect{sw - kBatW - metrics.contentSidePadding, metrics.topPadding, kBatW, kBatH},
+  GUI.drawBatteryRight(renderer, Rect{sw - viewRight - kBatW - metrics.contentSidePadding, overlayTop, kBatW, kBatH},
                        /*showPercentage=*/false);
 
   const uint8_t availFaces = countAvailableFaces(sw, sh);
@@ -502,7 +538,7 @@ void StandbyActivity::render(RenderLock&&) {
 // backup by the gray LUT waveform. Mirrors EpubReaderActivity.cpp:813-837. The
 // caller gates invocation (passive Immersive vs interactive on-demand); this
 // just runs the pass unconditionally.
-void StandbyActivity::applyGrayscalePass(int sw, int sh) {
+void StandbyActivity::applyGrayscalePass(const Rect& viewport) {
   if (!renderer.storeBwBuffer()) {
     LOG_ERR("STANDBY", "Grayscale pass skipped: storeBwBuffer failed");
     return;
@@ -510,12 +546,18 @@ void StandbyActivity::applyGrayscalePass(int sw, int sh) {
 
   renderer.clearScreen(0x00);
   renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-  currentFace_->render(renderer, Rect{0, 0, sw, sh});
+  {
+    const GfxRenderer::ClipScope clip(renderer, viewport.x, viewport.y, viewport.width, viewport.height);
+    currentFace_->render(renderer, viewport);
+  }
   renderer.copyGrayscaleLsbBuffers();
 
   renderer.clearScreen(0x00);
   renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-  currentFace_->render(renderer, Rect{0, 0, sw, sh});
+  {
+    const GfxRenderer::ClipScope clip(renderer, viewport.x, viewport.y, viewport.width, viewport.height);
+    currentFace_->render(renderer, viewport);
+  }
   renderer.copyGrayscaleMsbBuffers();
 
   renderer.displayGrayBuffer();

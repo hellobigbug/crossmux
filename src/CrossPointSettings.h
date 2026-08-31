@@ -5,6 +5,10 @@
 
 #include <cstdint>
 
+#include "InxItemLayout.h"
+#include "InxRecentLayout.h"
+#include "util/ReadingGuideLine.h"
+
 // I18nKeys.h is intentionally NOT included here. It is auto-generated and
 // changes on every translation edit; pulling it into this widely-included
 // settings header would force the entire project to recompile on i18n
@@ -19,10 +23,14 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   friend class PersistableStore<CrossPointSettings>;
 
  public:
-  // Returns the SKU-appropriate first-boot/fallback Language enum index. Defined
-  // in CrossPointSettings.cpp so I18nKeys.h stays out of this header. Public so
-  // the settings loader can reset to this build's default on a cross-SKU reflash.
+  // Returns the first-boot/fallback Language enum index. Defined out of line so
+  // I18nKeys.h stays out of this widely included header.
   static uint8_t defaultLanguageIndex();
+
+  static constexpr uint8_t CURRENT_ONBOARDING_VERSION = 1;
+  static constexpr bool requiresOnboarding(const uint8_t completedVersion) {
+    return completedVersion != CURRENT_ONBOARDING_VERSION;
+  }
 
   // Access the settings mutex for protecting multi-field reads/writes from other cores.
   // Callers must not re-enter SETTINGS methods that lock storeMutex while holding it.
@@ -36,6 +44,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     BLANK = 4,
     COVER_CUSTOM = 5,
     QUICK_RESUME = 6,
+    TRANSPARENT = 7,
     SLEEP_SCREEN_MODE_COUNT
   };
   enum SLEEP_SCREEN_COVER_MODE { FIT = 0, CROP = 1, SLEEP_SCREEN_COVER_MODE_COUNT };
@@ -77,7 +86,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     XTC_STATUS_BAR_MODE_COUNT
   };
 
-  enum STATUS_BAR_CLOCK_MODE { STATUS_BAR_CLOCK_HIDE = 0, STATUS_BAR_CLOCK_RIGHT = 1, STATUS_BAR_CLOCK_LEFT = 2 };
+  enum STATUS_BAR_CLOCK_MODE {
+    STATUS_BAR_CLOCK_HIDE = 0,
+    STATUS_BAR_CLOCK_RIGHT = 1,
+    STATUS_BAR_CLOCK_LEFT = 2,
+    STATUS_BAR_CLOCK_MODE_COUNT
+  };
 
   enum ORIENTATION {
     PORTRAIT = 0,       // 480x800 logical coordinates (current default)
@@ -97,6 +111,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     BACK_CONFIRM_RIGHT_LEFT = 3,
     FRONT_BUTTON_LAYOUT_COUNT
   };
+
+  enum class ContentProfile : uint8_t { Global = 0, China = 1 };
 
   // Front button hardware identifiers (for remapping)
   enum FRONT_BUTTON_HARDWARE {
@@ -119,8 +135,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Legacy 1.4-and-earlier files stored a 0..3 SMALL/MEDIUM/LARGE/EXTRA_LARGE
   // slot; fromJson() folds that range up (see LEGACY_FONT_SIZE_MAX).
   static constexpr uint8_t LEGACY_FONT_SIZE_MAX = 3;
-  static constexpr uint8_t DEFAULT_FONT_POINT_SIZE = 14;
-  enum LINE_COMPRESSION { TIGHT = 0, NORMAL = 1, WIDE = 2, LINE_COMPRESSION_COUNT };
+  static constexpr uint8_t DEFAULT_FONT_POINT_SIZE = 12;
+  enum LINE_COMPRESSION { TIGHT = 0, NORMAL = 1, WIDE = 2, EXTRA_WIDE = 3, LINE_COMPRESSION_COUNT };
+  enum SYNTHETIC_BOLD {
+    SYNTHETIC_BOLD_OFF = 0,
+    SYNTHETIC_BOLD_LIGHT = 1,
+    SYNTHETIC_BOLD_STANDARD = 2,
+    SYNTHETIC_BOLD_HEAVY = 3,
+    SYNTHETIC_BOLD_COUNT
+  };
   enum PARAGRAPH_ALIGNMENT {
     JUSTIFIED = 0,
     LEFT_ALIGN = 1,
@@ -129,6 +152,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     BOOK_STYLE = 4,
     PARAGRAPH_ALIGNMENT_COUNT
   };
+
+  static constexpr int8_t READING_GUIDE_LINE_OFFSET_MIN = -30;
+  static constexpr int8_t READING_GUIDE_LINE_OFFSET_MAX = 30;
+  static constexpr int8_t READING_GUIDE_LINE_OFFSET_DEFAULT = -2;
 
   // Auto-sleep timeout options (in minutes)
   enum SLEEP_TIMEOUT {
@@ -140,18 +167,27 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     SLEEP_TIMEOUT_COUNT
   };
 
-  // E-ink refresh frequency (pages between full refreshes)
+  // E-ink refresh frequency (pages between full refreshes).
   enum REFRESH_FREQUENCY {
     REFRESH_1 = 0,
     REFRESH_5 = 1,
     REFRESH_10 = 2,
     REFRESH_15 = 3,
     REFRESH_30 = 4,
+    REFRESH_NEVER = 5,
     REFRESH_FREQUENCY_COUNT
   };
 
   // Short power button press actions
-  enum SHORT_PWRBTN { IGNORE = 0, SLEEP = 1, PAGE_TURN = 2, FORCE_REFRESH = 3, FOOTNOTES = 4, SHORT_PWRBTN_COUNT };
+  enum SHORT_PWRBTN {
+    IGNORE = 0,
+    SLEEP = 1,
+    PAGE_TURN = 2,
+    FORCE_REFRESH = 3,
+    FOOTNOTES = 4,
+    PWR_CONFIRM = 5,
+    SHORT_PWRBTN_COUNT
+  };
 
   // Long-press Confirm action while reading an EPUB. The setting cycles through these values.
   // Persisted in settings.json by index: any new function (e.g. dictionary, bookmark) MUST use a
@@ -162,6 +198,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     LP_MENU_DISABLED = 1,
     LP_MENU_BOOKMARK = 2,
     LP_MENU_DICTIONARY = 3,
+    LP_MENU_READER_MENU = 4,
     LONG_PRESS_MENU_FUNCTION_COUNT
   };
 
@@ -177,14 +214,29 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   };
 
   // UI Theme
-  enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2, ROUNDEDRAFF = 3 };
+  enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2, ROUNDEDRAFF = 3, LYRA_CAROUSEL = 4, INX = 5 };
 
   // Image rendering in EPUB reader
   enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };
 
+  // How Select opens the reader menu: the classic full-screen list, or a toolbar
+  // overlay (top/bottom bars with Contents / Text / More bottom-sheet panels)
+  // painted over the page.
+  enum READER_MENU_STYLE { READER_MENU_LIST = 0, READER_MENU_TOOLBAR = 1, READER_MENU_STYLE_COUNT };
+
   enum TILT_PAGE_TURN { TILT_OFF = 0, TILT_NORMAL = 1, TILT_NVERTED = 2, TILT_PAGE_TURN_COUNT };
 
-  enum TOUCH_READER_CONTROLS { TOUCH_READER_OFF = 0, TOUCH_READER_ON = 1, TOUCH_READER_CONTROLS_COUNT };
+  enum TOUCH_READER_CONTROLS {
+    TOUCH_READER_OFF = 0,
+    TOUCH_READER_ON = 1,
+    TOUCH_READER_SWIPE = 2,
+    TOUCH_READER_INVERTED_TAP = 3,
+    TOUCH_READER_CONTROLS_COUNT
+  };
+
+  // How the reader menu opens on touch boards. Persisted under the legacy
+  // "tapForReaderMenu" key: 0/1 keep their old Off/Tap meaning.
+  enum SHOW_READER_MENU { READER_MENU_OFF = 0, READER_MENU_TAP = 1, READER_MENU_SWIPE_UP = 2, SHOW_READER_MENU_COUNT };
 
   enum QUICK_RESUME_SLEEP_SCREEN {
     QUICK_RESUME_NEVER = 0,
@@ -204,6 +256,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
 
   // Sleep screen settings
   uint8_t sleepScreen = DARK;
+  // Night mode: inverted output polarity, applied to every activity per
+  // render by ActivityManager. The sleep screen opts out itself.
+  uint8_t screenInverted = 0;
   // Sleep screen cover mode settings
   uint8_t sleepScreenCoverMode = FIT;
   // Sleep screen cover filter
@@ -222,18 +277,19 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Clock UTC offset in quarter-hour steps, biased by 48 so it fits in uint8_t.
   // Value 48 = UTC+0, 0 = UTC-12:00, 104 = UTC+14:00.
   // Quarter-hour granularity supports oddball zones like Nepal (+5:45) and Chatham (+12:45).
-#ifdef ENABLE_CHINESE_VERSION
-  uint8_t clockUtcOffsetQ = 80;  // UTC+8
-#else
   uint8_t clockUtcOffsetQ = 48;
-#endif
   // Clock display format: 0 = 24-hour, 1 = 12-hour
   uint8_t clockFormat = 0;
   // Opportunistically synchronize the system UTC clock while Wi-Fi is already connected.
   uint8_t clockAutoSync = 1;
   // Text rendering settings
-  uint8_t extraParagraphSpacing = 1;
+  uint8_t extraParagraphSpacing = 0;
   uint8_t textAntiAliasing = 1;
+  uint8_t fakeBold = SYNTHETIC_BOLD_STANDARD;
+  uint8_t readingBackgroundEnabled = 0;
+  uint8_t readingGuideLineEnabled = 0;
+  uint8_t readingGuideLineStyle = static_cast<uint8_t>(readingGuideLine::Style::ShortDash);
+  int8_t readingGuideLineOffset = READING_GUIDE_LINE_OFFSET_DEFAULT;
   // Short power button click behaviour
   uint8_t shortPwrBtn = IGNORE;
   // EPUB reading orientation settings
@@ -250,7 +306,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t frontButtonLeft = FRONT_HW_LEFT;
   uint8_t frontButtonRight = FRONT_HW_RIGHT;
   // Reader font settings
-  uint8_t fontFamily = NOTOSERIF;
+  uint8_t fontFamily = NOTOSANS;
   // Point size of the reader font. Only sizes the active family actually ships
   // are selectable; SdCardFontSystem::ensureLoaded() snaps this to the nearest
   // available size (and persists the snap) whenever the family changes.
@@ -284,7 +340,14 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Defaults to Disabled so shortcut-based bookmark toggling remains opt-in.
   uint8_t longPressMenuFunction = LP_MENU_DISABLED;
   // UI Theme
-  uint8_t uiTheme = LYRA;
+  uint8_t uiTheme = INX;
+  // Show front-button hints along the bottom edge on non-touch devices.
+  uint8_t showButtonHints = 1;
+  uint8_t inxRecentLayout = static_cast<uint8_t>(InxRecentLayout::Flow);
+  uint8_t inxLibraryLayout = static_cast<uint8_t>(InxItemLayout::Icons);
+  uint8_t inxAppsLayout = static_cast<uint8_t>(InxItemLayout::Icons);
+  // Show and enable the Standby shortcut on the home screen.
+  uint8_t standbyShortcutEnabled = 0;
   // Sunlight fading compensation
   uint8_t fadingFix = 0;
   // Power button return from footnotes (1 = enabled, 0 = disabled)
@@ -293,8 +356,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t embeddedStyle = 1;
   // Focus Reading - emphasizes the first part of words with bold
   uint8_t focusReadingEnabled = 0;
+  uint8_t readerMenuStyle = READER_MENU_LIST;
   // SD card font family name (empty = use built-in fontFamily)
   char sdFontFamilyName[32] = "";
+  // Prefer the internal Flash cache for the selected SD reader font.
+  uint8_t sdFontFlashPreload = 0;
   // Dictionary folder name under /dictionaries (empty = no dictionary)
   char dictionaryName[32] = "";
   // Show hidden files/directories (starting with '.') in the file browser (0 = hidden, 1 = show)
@@ -305,22 +371,46 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t moveFinishedToReadFolder = 0;
   // Short press Back goes to file browser instead of home (0 = disabled, 1 = enabled)
   uint8_t backShortToFileBrowser = 0;
+  // Apps menu visibility. Set bits hide stable app IDs.
+  static constexpr uint8_t APPS_CATALOG_VERSION = 1;
+  static constexpr uint8_t BUDDY_APP_ID = 10;
+  static constexpr uint8_t PIXEL_SWITCH_APP_ID = 12;
+  static constexpr uint32_t CHINA_ONLY_APPS_MASK = (uint32_t{1} << 1) | (uint32_t{1} << 4);
+  static constexpr uint32_t DEFAULT_HIDDEN_APPS_MASK = (uint32_t{1} << 4) | (uint32_t{1} << 5) | (uint32_t{1} << 6) |
+                                                       (uint32_t{1} << 8) | (uint32_t{1} << BUDDY_APP_ID) |
+                                                       (uint32_t{1} << PIXEL_SWITCH_APP_ID);
+  uint32_t hiddenAppsMask = DEFAULT_HIDDEN_APPS_MASK;
+  uint8_t appsCatalogVersion = APPS_CATALOG_VERSION;
+  uint8_t buddyClaimed = 0;
   // Image rendering mode in EPUB reader
   uint8_t imageRendering = IMAGES_DISPLAY;
   // Tilt-based page turning (X3 only — requires QMI8658 IMU)
   uint8_t tiltPageTurn = TILT_OFF;
   // Touch screen reader zones/gestures on boards with a touch controller.
   uint8_t touchReaderControls = TOUCH_READER_ON;
-  // Language setting (Language enum index). First-boot default is ZH_CN under
-  // ENABLE_CHINESE_VERSION (where the table only has EN + ZH_CN), otherwise EN.
+  // Reader menu open gesture (SHOW_READER_MENU: off / center tap / bottom-edge
+  // up-swipe). Only surfaced on home-key boards, where Home is the capacitive
+  // key and the bottom edge is free; elsewhere it stays at the Tap default.
+  uint8_t showReaderMenu = READER_MENU_TAP;
+  // Frontlight quick-panel state. Brightness and warmth remain persisted even
+  // when restore-on-wake is disabled.
+  uint8_t frontlightBrightness = 60;
+  uint8_t frontlightWarmth = 50;
+  uint8_t frontlightOn = 0;
+  uint8_t frontlightRestoreOnWake = 1;
+  // Language setting (Language enum index). Fresh devices start in English and
+  // choose their UI language and locked content profile in the startup guide.
   // Resolved out-of-line in CrossPointSettings.cpp so the generated
   // I18nKeys.h header doesn't leak into every consumer of this header.
-  // Note: this default also applies on factory reset (re-construction sets
-  // the field back to ZH_CN for CN builds, EN otherwise) — by design, so a
-  // fresh device always lands on the SKU's intended UI language.
+  // Factory reset reconstructs the settings and the startup guide asks again.
   uint8_t language = defaultLanguageIndex();
+  ContentProfile contentProfile = ContentProfile::Global;
+  // Exact version of the startup guide last completed. Zero/missing means never completed.
+  uint8_t onboardingVersion = 0;
   // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
+  // OTA update channel preference (0 = stable, 1 = nightly).
+  uint8_t otaNightlyEnabled = 0;
   // Reading Analytics suite settings.
   // Daily reading goal target (DAILY_GOAL_TARGET enum index).
   uint8_t dailyGoalTarget = DAILY_GOAL_30_MIN;
@@ -405,6 +495,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Daily reading goal in milliseconds, derived from dailyGoalTarget.
   uint64_t getDailyGoalMs() const;
 };
+
+static_assert(CrossPointSettings::CURRENT_ONBOARDING_VERSION > 0);
+static_assert(CrossPointSettings::CURRENT_ONBOARDING_VERSION < UINT8_MAX);
+static_assert(!CrossPointSettings::requiresOnboarding(CrossPointSettings::CURRENT_ONBOARDING_VERSION));
+static_assert(CrossPointSettings::requiresOnboarding(0));
+static_assert(CrossPointSettings::requiresOnboarding(CrossPointSettings::CURRENT_ONBOARDING_VERSION + 1));
 
 // Helper macro to access settings
 #define SETTINGS CrossPointSettings::getInstance()

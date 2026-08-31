@@ -4,14 +4,18 @@
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
 #include <Logging.h>
+#include <Memory.h>
 
 #include <algorithm>
 #include <memory>
 
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
+#include "components/SelectionCursorPolicy.h"
 #include "components/themes/BaseTheme.h"
+#include "components/themes/inx/InxTheme.h"
 #include "components/themes/lyra/Lyra3CoversTheme.h"
+#include "components/themes/lyra/LyraCarouselTheme.h"
 #include "components/themes/lyra/LyraTheme.h"
 #include "components/themes/roundedraff/RoundedRaffTheme.h"
 
@@ -28,44 +32,82 @@ void UITheme::reload() {
 }
 
 void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
+  std::unique_ptr<BaseTheme> nextTheme;
+  const ThemeMetrics* nextMetrics = &BaseMetrics::values;
   switch (type) {
     case CrossPointSettings::UI_THEME::CLASSIC:
       LOG_DBG("UI", "Using Classic theme");
-      currentTheme = std::make_unique<BaseTheme>();
-      currentMetrics = &BaseMetrics::values;
+      nextTheme = makeUniqueNoThrow<BaseTheme>();
       break;
     case CrossPointSettings::UI_THEME::LYRA:
       LOG_DBG("UI", "Using Lyra theme");
-      currentTheme = std::make_unique<LyraTheme>();
-      currentMetrics = &LyraMetrics::values;
+      nextTheme = makeUniqueNoThrow<LyraTheme>();
+      nextMetrics = &LyraMetrics::values;
       break;
     case CrossPointSettings::UI_THEME::ROUNDEDRAFF:
       LOG_DBG("UI", "Using RoundedRaff theme");
-      currentTheme = std::make_unique<RoundedRaffTheme>();
-      currentMetrics = &RoundedRaffMetrics::values;
+      nextTheme = makeUniqueNoThrow<RoundedRaffTheme>();
+      nextMetrics = &RoundedRaffMetrics::values;
       break;
     case CrossPointSettings::UI_THEME::LYRA_3_COVERS:
       LOG_DBG("UI", "Using Lyra 3 Covers theme");
-      currentTheme = std::make_unique<Lyra3CoversTheme>();
-      currentMetrics = &Lyra3CoversMetrics::values;
+      nextTheme = makeUniqueNoThrow<Lyra3CoversTheme>();
+      nextMetrics = &Lyra3CoversMetrics::values;
       break;
+    case CrossPointSettings::UI_THEME::LYRA_CAROUSEL:
+      LOG_DBG("UI", "Using Lyra Carousel theme");
+      nextTheme = makeUniqueNoThrow<LyraCarouselTheme>();
+      nextMetrics = &LyraCarouselMetrics::values;
+      break;
+    case CrossPointSettings::UI_THEME::INX:
+      LOG_DBG("UI", "Using INX theme");
+      nextTheme = makeUniqueNoThrow<InxTheme>();
+      nextMetrics = &InxMetrics::values;
+      break;
+    default:
+      LOG_ERR("UI", "Unknown theme %d, falling back to Classic", static_cast<int>(type));
+      nextTheme = makeUniqueNoThrow<BaseTheme>();
+      type = CrossPointSettings::UI_THEME::CLASSIC;
+      break;
+  }
+
+  if (!nextTheme) {
+    LOG_ERR("UI", "OOM creating theme %d; using static Classic fallback", static_cast<int>(type));
+    ownedTheme.reset();
+    currentTheme = &fallbackTheme;
+    currentMetrics = &BaseMetrics::values;
+    currentType = CrossPointSettings::UI_THEME::CLASSIC;
+  } else {
+    ownedTheme = std::move(nextTheme);
+    currentTheme = ownedTheme.get();
+    currentMetrics = nextMetrics;
+    currentType = type;
   }
   metricsValid = false;
 }
 
 const ThemeMetrics& UITheme::getMetrics() const {
-  // hasTouch() can flip once touch init completes after static construction, so the
-  // cached copy is refreshed when the flag differs instead of copying the struct per call.
-  const bool touch = gpio.hasTouch();
-  if (!metricsValid || touch != metricsForTouch) {
+  // Touch availability can flip after static construction, and the setting can
+  // change while this screen is open, so cache against the effective policy.
+  const bool showButtonHints = currentTheme->buttonHintsVisible();
+  if (!metricsValid || showButtonHints != metricsForButtonHints) {
     adjustedMetrics = *currentMetrics;
-    if (touch) {
+    if (!showButtonHints) {
       adjustedMetrics.buttonHintsHeight = 0;
     }
-    metricsForTouch = touch;
+    metricsForButtonHints = showButtonHints;
     metricsValid = true;
   }
   return adjustedMetrics;
+}
+
+bool UITheme::showSelectionCursor() const {
+#ifdef CROSSPOINT_EMULATED
+  return true;
+#else
+  return SelectionCursorPolicy::visible(currentType == CrossPointSettings::UI_THEME::INX, gpio.hasTouch(),
+                                        gpio.lastInputModality());
+#endif
 }
 
 int UITheme::getNumberOfItemsPerPage(const GfxRenderer& renderer, bool hasHeader, bool hasTabBar, bool hasButtonHints,
@@ -139,7 +181,7 @@ UIIcon UITheme::getFileIcon(const std::string& filename) {
   if (FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename)) {
     return Text;
   }
-  if (FsHelpers::hasBmpExtension(filename)) {
+  if (FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename)) {
     return Image;
   }
   return File;

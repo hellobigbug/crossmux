@@ -2,15 +2,23 @@
 
 #include <ArduinoJson.h>
 #include <FsHelpers.h>
+#include <HalFrontlight.h>
 #include <HalGPIO.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <WiFi.h>
 #include <esp_efuse.h>
 #include <esp_efuse_table.h>
+#ifndef SIMULATOR
+#include <lwip/sockets.h>
+#endif
 
 #include <algorithm>
 #include <cctype>
+#ifndef SIMULATOR
+#include <cerrno>
+#endif
 
 #include "CrossPointSettings.h"
 #include "FontInstaller.h"
@@ -19,10 +27,18 @@
 #include "SettingsList.h"
 #include "WebDAVHandler.h"
 #include "WifiCredentialStore.h"
-#include "html/FilesPageHtml.generated.h"
-#include "html/FontsPageHtml.generated.h"
-#include "html/HomePageHtml.generated.h"
-#include "html/SettingsPageHtml.generated.h"
+namespace web_zh_cn {
+#include "html/zh-CN/FilesPageHtml.generated.h"
+#include "html/zh-CN/FontsPageHtml.generated.h"
+#include "html/zh-CN/HomePageHtml.generated.h"
+#include "html/zh-CN/SettingsPageHtml.generated.h"
+}  // namespace web_zh_cn
+namespace web_en {
+#include "html/en/FilesPageHtml.generated.h"
+#include "html/en/FontsPageHtml.generated.h"
+#include "html/en/HomePageHtml.generated.h"
+#include "html/en/SettingsPageHtml.generated.h"
+}  // namespace web_en
 #include "html/js/jszip_minJs.generated.h"
 #include "util/BookCacheUtils.h"
 #include "util/TaskWatchdog.h"
@@ -33,6 +49,19 @@ namespace {
 constexpr const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
 constexpr uint16_t UDP_PORTS[] = {54982, 48123, 39001, 44044, 59678};
 constexpr uint16_t LOCAL_UDP_PORT = 8134;
+constexpr size_t FILE_LIST_BATCH_CAPACITY = 1400;
+
+bool useChineseWebUi() { return I18N.getLanguage() == Language::ZH_CN; }
+
+struct LocalizedPage {
+  const char* data;
+  size_t size;
+};
+
+LocalizedPage localizedPage(const char* chinese, const size_t chineseSize, const char* english,
+                            const size_t englishSize) {
+  return useChineseWebUi() ? LocalizedPage{chinese, chineseSize} : LocalizedPage{english, englishSize};
+}
 
 // Static pointer for WebSocket callback (WebSocketsServer requires C-style callback)
 CrossPointWebServer* wsInstance = nullptr;
@@ -113,7 +142,11 @@ void CrossPointWebServer::begin() {
   LOG_DBG("WEB", "Network mode: %s", apMode ? "AP" : "STA");
 
   LOG_DBG("WEB", "Creating web server on port %d...", port);
-  server.reset(new WebServer(port));
+  server = makeUniqueNoThrow<WebServer>(port);
+  if (!server) {
+    LOG_ERR("WEB", "OOM: WebServer (%u bytes)", static_cast<unsigned>(sizeof(WebServer)));
+    return;
+  }
 
   // Disable WiFi sleep to improve responsiveness and prevent 'unreachable' errors.
   // This is critical for reliable web server operation on ESP32.
@@ -127,9 +160,10 @@ void CrossPointWebServer::begin() {
 
   LOG_DBG("WEB", "[MEM] Free heap after WebServer allocation: %d bytes", ESP.getFreeHeap());
 
-  if (!server) {
-    LOG_ERR("WEB", "Failed to create WebServer!");
-    return;
+  upload.buffer = makeUniqueNoThrow<uint8_t[]>(UploadState::UPLOAD_BUFFER_SIZE);
+  fontUpload.buffer = makeUniqueNoThrow<uint8_t[]>(FontUploadState::BUFFER_SIZE);
+  if (!upload.buffer || !fontUpload.buffer) {
+    LOG_ERR("WEB", "OOM: upload buffers (%u bytes each)", static_cast<unsigned>(UploadState::UPLOAD_BUFFER_SIZE));
   }
 
   // Add Access-Control-Allow-* headers to every response so web-based clients
@@ -196,21 +230,23 @@ void CrossPointWebServer::begin() {
 
   // Start WebSocket server for fast binary uploads
   LOG_DBG("WEB", "Starting WebSocket server on port %d...", wsPort);
-  wsServer.reset(new WebSocketsServer(wsPort));
-  wsInstance = const_cast<CrossPointWebServer*>(this);
-  wsServer->begin();
-  wsServer->onEvent(wsEventCallback);
-  LOG_DBG("WEB", "WebSocket server started");
+  wsServer = makeUniqueNoThrow<WebSocketsServer>(wsPort);
+  if (wsServer) {
+    wsInstance = const_cast<CrossPointWebServer*>(this);
+    wsServer->begin();
+    wsServer->onEvent(wsEventCallback);
+    LOG_DBG("WEB", "WebSocket server started");
+  } else {
+    LOG_ERR("WEB", "OOM: WebSocketsServer (%u bytes)", static_cast<unsigned>(sizeof(WebSocketsServer)));
+  }
 
   udpActive = udp.begin(LOCAL_UDP_PORT);
   LOG_DBG("WEB", "Discovery UDP %s on port %d", udpActive ? "enabled" : "failed", LOCAL_UDP_PORT);
 
-  // All request handlers run on the task that calls handleClient(). Register
-  // that task before any handler can call esp_task_wdt_reset().
-  const esp_err_t watchdogResult = esp_task_wdt_add(nullptr);
-  watchdogTaskRegistered = watchdogResult == ESP_OK;
-  if (!watchdogTaskRegistered) {
-    LOG_ERR("WEB", "Failed to register web server task with watchdog: %s", esp_err_to_name(watchdogResult));
+  // Reuse one request buffer for the server lifetime to avoid repeated heap churn.
+  fileListBatch = makeUniqueNoThrow<char[]>(FILE_LIST_BATCH_CAPACITY);
+  if (!fileListBatch) {
+    LOG_ERR("WEB", "OOM: %zu-byte file list response buffer", FILE_LIST_BATCH_CAPACITY);
   }
 
   running = true;
@@ -242,10 +278,7 @@ void CrossPointWebServer::abortWsUpload(const char* tag) {
 void CrossPointWebServer::stop() {
   if (!running || !server) {
     LOG_DBG("WEB", "stop() called but already stopped (running=%d, server=%p)", running, server.get());
-    if (watchdogTaskRegistered) {
-      esp_task_wdt_delete(nullptr);
-      watchdogTaskRegistered = false;
-    }
+    fileListBatch.reset();
     return;
   }
 
@@ -283,13 +316,9 @@ void CrossPointWebServer::stop() {
   delay(10);
 
   server.reset();
+  fileListBatch.reset();
   LOG_DBG("WEB", "Web server stopped and deleted");
   LOG_DBG("WEB", "[MEM] Free heap after delete server: %d bytes", ESP.getFreeHeap());
-
-  if (watchdogTaskRegistered) {
-    esp_task_wdt_delete(nullptr);
-    watchdogTaskRegistered = false;
-  }
 
   // Note: Static upload variables (uploadFileName, uploadPath, uploadError) are declared
   // later in the file and will be cleared when they go out of scope or on next upload
@@ -358,20 +387,78 @@ CrossPointWebServer::WsUploadStatus CrossPointWebServer::getWsUploadStatus() con
   return status;
 }
 
-static void sendHtmlContent(WebServer* server, const char* data, size_t len) {
+#ifndef SIMULATOR
+static bool writeClientWithDeadline(NetworkClient& client, const char* data, size_t length,
+                                    unsigned long responseStart) {
+  constexpr unsigned long SEND_STALL_MS = 10000;
+  constexpr unsigned long RESPONSE_DEADLINE_MS = 60000;
+  size_t offset = 0;
+  unsigned long lastProgress = millis();
+
+  while (offset < length) {
+    const unsigned long now = millis();
+    if (now - lastProgress >= SEND_STALL_MS || now - responseStart >= RESPONSE_DEADLINE_MS) return false;
+
+    const int socketFd = client.fd();
+    if (socketFd < 0) return false;
+
+    const ssize_t written = ::send(socketFd, data + offset, length - offset, MSG_DONTWAIT);
+    if (written > 0) {
+      offset += static_cast<size_t>(written);
+      lastProgress = millis();
+      continue;
+    }
+    if (written == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR && errno != ENOMEM)) {
+      return false;
+    }
+    delay(1);
+  }
+  return true;
+}
+#endif
+
+static bool sendCompressedContent(WebServer* server, const char* contentType, const char* data, size_t len) {
+#ifdef SIMULATOR
   server->sendHeader("Content-Encoding", "gzip");
-  server->send_P(200, "text/html", data, len);
+  server->send_P(200, contentType, data, len);
+  return true;
+#else
+  constexpr size_t CHUNK_SIZE = 1400;
+  server->sendHeader("Content-Encoding", "gzip");
+  server->setContentLength(len);
+
+  const unsigned long responseStart = millis();
+  server->send(200, contentType, "");
+  if (!server->client().connected()) {
+    LOG_ERR("WEB", "Aborting %s response header after %lu ms", server->uri().c_str(), millis() - responseStart);
+    server->client().stop();
+    return false;
+  }
+
+  for (size_t offset = 0; offset < len; offset += CHUNK_SIZE) {
+    const size_t chunkLength = std::min(CHUNK_SIZE, len - offset);
+    if (!writeClientWithDeadline(server->client(), data + offset, chunkLength, responseStart)) {
+      LOG_ERR("WEB", "Aborting %s response body after %lu ms", server->uri().c_str(), millis() - responseStart);
+      server->client().stop();
+      return false;
+    }
+  }
+  return true;
+#endif
 }
 
 void CrossPointWebServer::handleRoot() const {
-  sendHtmlContent(server.get(), HomePageHtml, sizeof(HomePageHtml));
-  LOG_DBG("WEB", "Served root page");
+  const auto page = localizedPage(web_zh_cn::HomePageHtml, sizeof(web_zh_cn::HomePageHtml), web_en::HomePageHtml,
+                                  sizeof(web_en::HomePageHtml));
+  if (sendCompressedContent(server.get(), "text/html", page.data, page.size)) {
+    LOG_DBG("WEB", "Served root page");
+  }
 }
 
 void CrossPointWebServer::handleJszip() const {
-  server->sendHeader("Content-Encoding", "gzip");
-  server->send_P(200, "application/javascript", jszip_minJs, jszip_minJsCompressedSize);
-  LOG_DBG("WEB", "Served jszip.min.js");
+  if (sendCompressedContent(server.get(), "application/javascript", jszip_minJs, jszip_minJsCompressedSize)) {
+    LOG_DBG("WEB", "Served jszip.min.js");
+  }
 }
 
 void CrossPointWebServer::handleNotFound() const {
@@ -407,7 +494,7 @@ void CrossPointWebServer::handleStatus() const {
   doc["rssi"] = apMode ? 0 : WiFi.RSSI();
   doc["freeHeap"] = ESP.getFreeHeap();
   doc["uptime"] = millis() / 1000;
-  doc["device"] = gpio.deviceIsX3() ? "X3" : "X4";
+  doc["device"] = BoardConfig::ACTIVE.name;
 
   char snBuf[33] = {0};
   bool valid = false;
@@ -435,7 +522,7 @@ void CrossPointWebServer::handleStatus() const {
   server->send(200, "application/json", response);
 }
 
-void CrossPointWebServer::scanFiles(const char* path, const std::function<void(FileInfo)>& callback) const {
+void CrossPointWebServer::scanFiles(const char* path, const std::function<bool(const FileInfo&)>& callback) const {
   HalFile root = Storage.open(path);
   if (!root) {
     LOG_DBG("WEB", "Failed to open directory: %s", path);
@@ -453,6 +540,7 @@ void CrossPointWebServer::scanFiles(const char* path, const std::function<void(F
   HalFile file = root.openNextFile();
   char name[500];
   while (file) {
+    bool keepScanning = true;
     file.getName(name, sizeof(name));
     auto fileName = String(name);
 
@@ -482,10 +570,11 @@ void CrossPointWebServer::scanFiles(const char* path, const std::function<void(F
         info.isEpub = isEpubFile(info.name);
       }
 
-      callback(info);
+      keepScanning = callback(info);
     }
 
     file.close();
+    if (!keepScanning) break;
     yield();                          // Yield to allow WiFi and other tasks to process during long scans
     resetTaskWatchdogIfSubscribed();  // Reset watchdog to prevent timeout on large directories
     file = root.openNextFile();
@@ -496,7 +585,9 @@ void CrossPointWebServer::scanFiles(const char* path, const std::function<void(F
 bool CrossPointWebServer::isEpubFile(const String& filename) const { return FsHelpers::hasEpubExtension(filename); }
 
 void CrossPointWebServer::handleFileList() const {
-  sendHtmlContent(server.get(), FilesPageHtml, sizeof(FilesPageHtml));
+  const auto page = localizedPage(web_zh_cn::FilesPageHtml, sizeof(web_zh_cn::FilesPageHtml), web_en::FilesPageHtml,
+                                  sizeof(web_en::FilesPageHtml));
+  sendCompressedContent(server.get(), "text/html", page.data, page.size);
 }
 
 void CrossPointWebServer::handleFileListData() const {
@@ -514,39 +605,98 @@ void CrossPointWebServer::handleFileListData() const {
     }
   }
 
-  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server->send(200, "application/json", "");
-  server->sendContent("[");
+  if (!fileListBatch) {
+    LOG_ERR("WEB", "Cannot serve file list: %zu-byte response buffer unavailable", FILE_LIST_BATCH_CAPACITY);
+    server->send(503, "application/json", "{\"error\":\"Insufficient memory\"}");
+    return;
+  }
+
   char output[512];
   constexpr size_t outputSize = sizeof(output);
-  bool seenFirst = false;
   JsonDocument doc;
-
-  scanFiles(currentPath.c_str(), [this, &output, &doc, seenFirst](const FileInfo& info) mutable {
+  const auto serializeFileInfo = [&](const FileInfo& info) {
     doc.clear();
     doc["name"] = info.name;
     doc["size"] = info.size;
     doc["isDirectory"] = info.isDirectory;
     doc["isEpub"] = info.isEpub;
 
-    const size_t written = serializeJson(doc, output, outputSize);
-    if (written >= outputSize) {
-      // JSON output truncated; skip this entry to avoid sending malformed JSON
+    const size_t measured = measureJson(doc);
+    if (measured >= outputSize) {
       LOG_DBG("WEB", "Skipping file entry with oversized JSON for name: %s", info.name.c_str());
-      return;
+      return static_cast<size_t>(0);
     }
 
-    if (seenFirst) {
-      server->sendContent(",");
-    } else {
-      seenFirst = true;
-    }
-    server->sendContent(output);
-  });
-  server->sendContent("]");
-  // End of streamed response, empty chunk to signal client
+    const size_t written = serializeJson(doc, output, outputSize);
+    return written;
+  };
+
+  const unsigned long responseStart = millis();
+#ifdef SIMULATOR
+  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server->send(200, "application/json", "");
+#else
+  server->chunkResponseBegin("application/json");
+#endif
+
+  char* batch = fileListBatch.get();
+  size_t batchLen = 0;
+  size_t entryCount = 0;
+  size_t responseBytes = 0;
+  bool responseOpen = server->client().connected();
+  const auto flushBatch = [&]() {
+    if (batchLen == 0) return true;
+#ifdef SIMULATOR
+    server->sendContent(batch, batchLen);
+#else
+    server->chunkWrite(batch, batchLen);
+#endif
+    responseBytes += batchLen;
+    batchLen = 0;
+    responseOpen = server->client().connected();
+    return responseOpen;
+  };
+
+  batch[batchLen++] = '[';
+
+  if (responseOpen)
+    scanFiles(currentPath.c_str(), [&](const FileInfo& info) {
+      if (!server->client().connected()) {
+        responseOpen = false;
+        return false;
+      }
+      const size_t written = serializeFileInfo(info);
+      if (written == 0) return true;
+
+      const size_t required = written + (entryCount > 0 ? 1 : 0);
+      if (batchLen + required > FILE_LIST_BATCH_CAPACITY && !flushBatch()) return false;
+      if (entryCount > 0) batch[batchLen++] = ',';
+      memcpy(batch + batchLen, output, written);
+      batchLen += written;
+      ++entryCount;
+      return true;
+    });
+
+  if (responseOpen) {
+    if (batchLen + 1 > FILE_LIST_BATCH_CAPACITY) flushBatch();
+  }
+  if (responseOpen) {
+    batch[batchLen++] = ']';
+    flushBatch();
+  }
+
+  // Always finish the framework's chunked-response state, including disconnects.
+#ifdef SIMULATOR
   server->sendContent("");
-  LOG_DBG("WEB", "Served file listing page for path: %s", currentPath.c_str());
+#else
+  server->chunkResponseEnd();
+#endif
+  const unsigned long elapsed = millis() - responseStart;
+  if (responseOpen) {
+    LOG_INF("WEB", "Served %zu file entries (%zu bytes) in %lu ms", entryCount, responseBytes, elapsed);
+  } else {
+    LOG_ERR("WEB", "File list client disconnected after %zu entries and %lu ms", entryCount, elapsed);
+  }
 }
 
 void CrossPointWebServer::handleDownload() const {
@@ -608,7 +758,7 @@ void CrossPointWebServer::handleDownload() const {
   server->send(200, contentType.c_str(), "");
 
   NetworkClient client = server->client();
-  const size_t chunkSize = 4096;
+  constexpr size_t chunkSize = 512;
   uint8_t buffer[chunkSize];
 
   bool downloadOk = true;
@@ -640,7 +790,7 @@ static bool flushUploadBuffer(CrossPointWebServer::UploadState& state) {
   if (state.bufferPos > 0 && state.file) {
     resetTaskWatchdogIfSubscribed();  // Reset watchdog before potentially slow SD write
     const unsigned long writeStart = millis();
-    const size_t written = state.file.write(state.buffer.data(), state.bufferPos);
+    const size_t written = state.file.write(state.buffer.get(), state.bufferPos);
     totalWriteTime += millis() - writeStart;
     writeCount++;
     resetTaskWatchdogIfSubscribed();  // Reset watchdog after SD write
@@ -682,6 +832,10 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     state.bufferPos = 0;
     totalWriteTime = 0;
     writeCount = 0;
+    if (!state.buffer) {
+      state.error = "Not enough memory for upload buffer";
+      return;
+    }
 
     // Get upload path from query parameter (defaults to root if not specified)
     // Note: We use query parameter instead of form data because multipart form
@@ -736,7 +890,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
         const size_t space = UploadState::UPLOAD_BUFFER_SIZE - state.bufferPos;
         const size_t toCopy = (remaining < space) ? remaining : space;
 
-        memcpy(state.buffer.data() + state.bufferPos, data, toCopy);
+        memcpy(state.buffer.get() + state.bufferPos, data, toCopy);
         state.bufferPos += toCopy;
         data += toCopy;
         remaining -= toCopy;
@@ -1159,16 +1313,14 @@ void CrossPointWebServer::handleDelete() const {
 }
 
 void CrossPointWebServer::handleSettingsPage() const {
-  sendHtmlContent(server.get(), SettingsPageHtml, sizeof(SettingsPageHtml));
-  LOG_DBG("WEB", "Served settings page");
+  const auto page = localizedPage(web_zh_cn::SettingsPageHtml, sizeof(web_zh_cn::SettingsPageHtml),
+                                  web_en::SettingsPageHtml, sizeof(web_en::SettingsPageHtml));
+  if (sendCompressedContent(server.get(), "text/html", page.data, page.size)) {
+    LOG_DBG("WEB", "Served settings page");
+  }
 }
 
 void CrossPointWebServer::handleGetSettings() const {
-  // Pass the SD font registry so the fontFamily setting's enumStringValues
-  // includes SD-resident families — otherwise the web API only exposes the
-  // three built-in fonts.
-  const auto& settings = getSettingsList(&sdFontSystem.registry());
-
   server->setContentLength(CONTENT_LENGTH_UNKNOWN);
   server->send(200, "application/json", "");
   server->sendContent("[");
@@ -1178,8 +1330,8 @@ void CrossPointWebServer::handleGetSettings() const {
   bool seenFirst = false;
   JsonDocument doc;
 
-  for (const auto& s : settings) {
-    if (!s.key) continue;  // Skip ACTION-only entries
+  forEachSettingsListEntry(&sdFontSystem.registry(), [this, &doc, &output, &seenFirst](const SettingInfo& s) {
+    if (!s.key) return;  // Skip ACTION-only entries
 
     doc.clear();
     doc["key"] = s.key;
@@ -1217,6 +1369,8 @@ void CrossPointWebServer::handleGetSettings() const {
         doc["type"] = "value";
         if (s.valuePtr) {
           doc["value"] = static_cast<int>(SETTINGS.*(s.valuePtr));
+        } else if (s.signedValuePtr) {
+          doc["value"] = static_cast<int>(SETTINGS.*(s.signedValuePtr));
         }
         doc["min"] = s.valueRange.min;
         doc["max"] = s.valueRange.max;
@@ -1233,13 +1387,13 @@ void CrossPointWebServer::handleGetSettings() const {
         break;
       }
       default:
-        continue;
+        return;
     }
 
     const size_t written = serializeJson(doc, output, outputSize);
     if (written >= outputSize) {
       LOG_DBG("WEB", "Skipping oversized setting JSON for: %s", s.key);
-      continue;
+      return;
     }
 
     if (seenFirst) {
@@ -1248,7 +1402,9 @@ void CrossPointWebServer::handleGetSettings() const {
       seenFirst = true;
     }
     server->sendContent(output);
-  }
+    yield();                          // Yield to allow WiFi and other tasks to process during a slow send
+    resetTaskWatchdogIfSubscribed();  // Reset watchdog: each sendContent() is a blocking network write
+  });
 
   server->sendContent("]");
   server->sendContent("");
@@ -1269,12 +1425,11 @@ void CrossPointWebServer::handlePostSettings() {
     return;
   }
 
-  const auto& settings = getSettingsList(&sdFontSystem.registry());
   int applied = 0;
 
-  for (const auto& s : settings) {
-    if (!s.key) continue;
-    if (!doc[s.key].is<JsonVariant>()) continue;
+  forEachSettingsListEntry(&sdFontSystem.registry(), [&doc, &applied](const SettingInfo& s) {
+    if (!s.key) return;
+    if (!doc[s.key].is<JsonVariant>()) return;
 
     switch (s.type) {
       case SettingType::TOGGLE: {
@@ -1304,6 +1459,8 @@ void CrossPointWebServer::handlePostSettings() {
         if (val >= s.valueRange.min && val <= s.valueRange.max) {
           if (s.valuePtr) {
             SETTINGS.*(s.valuePtr) = static_cast<uint8_t>(val);
+          } else if (s.signedValuePtr) {
+            SETTINGS.*(s.signedValuePtr) = static_cast<int8_t>(val);
           }
           applied++;
         }
@@ -1324,9 +1481,11 @@ void CrossPointWebServer::handlePostSettings() {
       default:
         break;
     }
-  }
+  });
 
   SETTINGS.saveToFile();
+  Frontlight.setWarmth(SETTINGS.frontlightWarmth);
+  Frontlight.setBrightness(SETTINGS.frontlightBrightness);
 
   LOG_DBG("WEB", "Applied %d setting(s)", applied);
   server->send(200, "text/plain", String("Applied ") + String(applied) + " setting(s)");
@@ -1360,6 +1519,8 @@ void CrossPointWebServer::handleGetOpdsServers() const {
 
     if (i > 0) server->sendContent(",");
     server->sendContent(output);
+    yield();                          // Yield to allow WiFi and other tasks to process during a slow send
+    resetTaskWatchdogIfSubscribed();  // Reset watchdog: each sendContent() is a blocking network write
   }
 
   server->sendContent("]");
@@ -1451,8 +1612,7 @@ void CrossPointWebServer::handleDeleteOpdsServer() {
 // ---- Wi-Fi Credentials API ----
 
 void CrossPointWebServer::handleGetWifiNetworks() const {
-  const auto& credentials = WIFI_STORE.getCredentials();
-  const std::string& lastConnectedSsid = WIFI_STORE.getLastConnectedSsid();
+  const auto credentials = WIFI_STORE.getCredentialSummaries();
 
   // Stream JSON array incrementally to avoid allocating the full response in memory
   server->setContentLength(CONTENT_LENGTH_UNKNOWN);
@@ -1468,14 +1628,16 @@ void CrossPointWebServer::handleGetWifiNetworks() const {
     doc["index"] = i;
     doc["ssid"] = credentials[i].ssid;
     // Never expose Wi-Fi passwords over the API — only indicate whether one is set
-    doc["hasPassword"] = !credentials[i].password.empty();
-    doc["isLastConnected"] = credentials[i].ssid == lastConnectedSsid;
+    doc["hasPassword"] = credentials[i].hasPassword;
+    doc["isLastConnected"] = credentials[i].isLastConnected;
 
     const size_t written = serializeJson(doc, output, outputSize);
     if (written >= outputSize) continue;
 
     if (i > 0) server->sendContent(",");
     server->sendContent(output);
+    yield();                          // Yield to allow WiFi and other tasks to process during a slow send
+    resetTaskWatchdogIfSubscribed();  // Reset watchdog: each sendContent() is a blocking network write
   }
 
   server->sendContent("]");
@@ -1510,15 +1672,19 @@ void CrossPointWebServer::handlePostWifiNetwork() {
 
   if (doc["index"].is<int>()) {
     int idx = doc["index"].as<int>();
-    const auto& credentials = WIFI_STORE.getCredentials();
-    if (idx < 0 || idx >= static_cast<int>(credentials.size())) {
+    if (idx < 0) {
+      server->send(400, "text/plain", "Invalid network index");
+      return;
+    }
+    const auto credential = WIFI_STORE.getCredentialAt(static_cast<size_t>(idx));
+    if (!credential) {
       server->send(400, "text/plain", "Invalid network index");
       return;
     }
 
-    const std::string oldSsid = credentials[static_cast<size_t>(idx)].ssid;
+    const std::string oldSsid = credential->ssid;
     if (!hasPasswordField) {
-      password = credentials[static_cast<size_t>(idx)].password;
+      password = credential->password;
     }
 
     bool ok = true;
@@ -1566,19 +1732,22 @@ void CrossPointWebServer::handleDeleteWifiNetwork() {
   }
 
   int idx = doc["index"].as<int>();
-  const auto& credentials = WIFI_STORE.getCredentials();
-  if (idx < 0 || idx >= static_cast<int>(credentials.size())) {
+  if (idx < 0) {
+    server->send(400, "text/plain", "Invalid network index");
+    return;
+  }
+  const auto ssid = WIFI_STORE.getSsidAt(static_cast<size_t>(idx));
+  if (!ssid) {
     server->send(400, "text/plain", "Invalid network index");
     return;
   }
 
-  const std::string ssid = credentials[static_cast<size_t>(idx)].ssid;
-  if (!WIFI_STORE.removeCredential(ssid)) {
+  if (!WIFI_STORE.removeCredential(*ssid)) {
     server->send(400, "text/plain", "Failed to delete Wi-Fi network");
     return;
   }
 
-  LOG_DBG("WEB", "Deleted Wi-Fi network at index %d (SSID: %s)", idx, ssid.c_str());
+  LOG_DBG("WEB", "Deleted Wi-Fi network at index %d (SSID: %s)", idx, ssid->c_str());
   server->send(200, "text/plain", "OK");
 }
 
@@ -1772,8 +1941,11 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
 // --- Font management handlers ---
 
 void CrossPointWebServer::handleFontsPage() const {
-  sendHtmlContent(server.get(), FontsPageHtml, sizeof(FontsPageHtml));
-  LOG_DBG("WEB", "Served fonts page");
+  const auto page = localizedPage(web_zh_cn::FontsPageHtml, sizeof(web_zh_cn::FontsPageHtml), web_en::FontsPageHtml,
+                                  sizeof(web_en::FontsPageHtml));
+  if (sendCompressedContent(server.get(), "text/html", page.data, page.size)) {
+    LOG_DBG("WEB", "Served fonts page");
+  }
 }
 
 void CrossPointWebServer::handleFontList() const {
@@ -1831,6 +2003,11 @@ void CrossPointWebServer::handleFontUploadData() {
       fontUpload.magicChecked = false;
       fontUpload.bytesWritten = 0;
       fontUpload.bufferPos = 0;
+
+      if (!fontUpload.buffer) {
+        LOG_ERR("WEB", "Font upload unavailable: no buffer");
+        break;
+      }
 
       if (!FontInstaller::isValidFamilyName(family.c_str())) {
         LOG_ERR("WEB", "Invalid font family name: %s", family.c_str());
@@ -1891,13 +2068,13 @@ void CrossPointWebServer::handleFontUploadData() {
       while (remaining > 0) {
         size_t space = FontUploadState::BUFFER_SIZE - fontUpload.bufferPos;
         size_t chunk = (remaining < space) ? remaining : space;
-        memcpy(fontUpload.buffer.data() + fontUpload.bufferPos, src, chunk);
+        memcpy(fontUpload.buffer.get() + fontUpload.bufferPos, src, chunk);
         fontUpload.bufferPos += chunk;
         src += chunk;
         remaining -= chunk;
 
         if (fontUpload.bufferPos >= FontUploadState::BUFFER_SIZE) {
-          fontUpload.file.write(fontUpload.buffer.data(), fontUpload.bufferPos);
+          fontUpload.file.write(fontUpload.buffer.get(), fontUpload.bufferPos);
           fontUpload.bytesWritten += fontUpload.bufferPos;
           fontUpload.bufferPos = 0;
           resetTaskWatchdogIfSubscribed();
@@ -1909,7 +2086,7 @@ void CrossPointWebServer::handleFontUploadData() {
     case UPLOAD_FILE_END: {
       // Flush remaining buffer
       if (fontUpload.valid && fontUpload.bufferPos > 0) {
-        fontUpload.file.write(fontUpload.buffer.data(), fontUpload.bufferPos);
+        fontUpload.file.write(fontUpload.buffer.get(), fontUpload.bufferPos);
         fontUpload.bytesWritten += fontUpload.bufferPos;
         fontUpload.bufferPos = 0;
       }

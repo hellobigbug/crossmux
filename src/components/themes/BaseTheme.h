@@ -6,6 +6,9 @@
 #include <string>
 #include <vector>
 
+#include "activities/MainTab.h"
+#include "fontIds.h"
+
 class GfxRenderer;
 struct RecentBook;
 
@@ -38,11 +41,38 @@ struct ThemeMetrics {
   int contentSidePadding;
   int listRowHeight;
   int listWithSubtitleRowHeight;
+  // FreeInkUI list shape, consumed by uiThemeTokens() for screens rendered
+  // through FreeInkApp: the theme supplies geometry and selection style, the
+  // uiScale fonts supply the sizes. Plain data by design — the eventual
+  // SD-card theme files will provide exactly these values.
+  int listRowGap;          // vertical gap between rows
+  int listRowRadius;       // row corner radius (RoundedRaff cards, Lyra pill)
+  int listInset;           // horizontal inset of the whole list band
+  int listSidePadding;     // text inset within a row
+  int listSelectionStyle;  // 0=invert fill, 1=light pill, 2=underline, 3=triangle (fui::SelectionStyle order)
+  int listScrollWidth;     // scroll indicator thickness
+  int listScrollSide;      // 0 = right edge, 1 = left edge
+  bool listTitleBold;      // bold row titles (RoundedRaff)
+  int listSeparatorStyle;  // fui::SeparatorStyle order
+  int listValueMaxWidth;   // 0 = unlimited
+  bool listSelectionCoversScrollReservation;
+  // FreeInkUI header shape, same contract as the list fields above.
+  int headerSidePadding;    // title text inset
+  int headerUnderlineSize;  // bottom rule thickness (Lyra), 0 = none
+  int headerTitleAlign;     // 0 = left, 1 = center, 2 = right (fui::TextAlign order)
+  int headerBatterySide;    // 0 = right edge, 1 = left edge
+  // Battery in its own corner strip (batteryBarHeight tall) with the title on
+  // the lower sub-band spanning the full width (Lyra), vs sharing the title
+  // line with a width reserve (Classic, RoundedRaff).
+  bool headerBatteryDetached;
   int menuRowHeight;
   int menuSpacing;
 
   int tabSpacing;
   int tabBarHeight;
+  // Selected-tab pill fills its equal-width slot (legacy RoundedRaff tabs)
+  // instead of shrinking to hug the label (legacy Lyra tabs).
+  bool tabPillFullSlot = false;
 
   int scrollBarWidth;
   int scrollBarRightOffset;
@@ -51,6 +81,7 @@ struct ThemeMetrics {
   int homeCoverHeight;
   int homeCoverTileHeight;
   int homeRecentBooksCount;
+  bool homeShowRecentBookTitle;
   bool homeContinueReadingInMenu;
   int homeMenuTopOffset;
 
@@ -99,6 +130,14 @@ struct ThemeMetrics {
   int textFieldNormalThickness;
   int textFieldCursorThickness;
   int textFieldLineEndOffset;
+
+  // FreeInkUI control shape (the control center panel), same contract as the
+  // list fields above: quick-setting tiles and slider step buttons, the
+  // sheet's free-edge corners, and the capsule slider's corners (255 = full
+  // stadium, i.e. radius = half the control height).
+  int controlRadius;
+  int sheetRadius;
+  int capsuleRadius;
 };
 
 enum UIIcon {
@@ -117,6 +156,7 @@ enum UIIcon {
   Bookmark,
   Apps,
   Sudoku,
+  Sokoban,
   Gomoku,
 #ifdef ENABLE_CHINESE_VERSION
   ChineseChess,
@@ -126,6 +166,17 @@ enum UIIcon {
   Avatar,
   Standby,
   Game2048,
+  Buddy,
+  PixelSwitch,
+  Opds,
+  ReadingStats,
+  AirPage,
+  ReadingHeatmap,
+  ReadingProfile,
+  Achievements,
+  Calculator,
+  Woodfish,
+  Usb
 };
 
 // Default theme implementation (Classic Theme)
@@ -143,6 +194,19 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .contentSidePadding = 20,
                                  .listRowHeight = 30,
                                  .listWithSubtitleRowHeight = 50,
+                                 .listRowGap = 0,
+                                 .listRowRadius = 0,
+                                 .listInset = 0,
+                                 .listSidePadding = 20,
+                                 .listSelectionStyle = 0,  // invert fill
+                                 .listScrollWidth = 4,
+                                 .listScrollSide = 0,
+                                 .listTitleBold = false,
+                                 .headerSidePadding = 18,
+                                 .headerUnderlineSize = 0,
+                                 .headerTitleAlign = 1,  // centered
+                                 .headerBatterySide = 0,
+                                 .headerBatteryDetached = false,
                                  .menuRowHeight = 45,
                                  .menuSpacing = 8,
                                  .tabSpacing = 10,
@@ -153,6 +217,7 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .homeCoverHeight = 400,
                                  .homeCoverTileHeight = 400,
                                  .homeRecentBooksCount = 1,
+                                 .homeShowRecentBookTitle = false,
                                  .homeContinueReadingInMenu = false,
                                  .homeMenuTopOffset = 10,
                                  .buttonHintsHeight = 40,
@@ -195,23 +260,43 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .textFieldHorizontalPadding = 6,
                                  .textFieldNormalThickness = 1,
                                  .textFieldCursorThickness = 3,
-                                 .textFieldLineEndOffset = 0};
+                                 .textFieldLineEndOffset = 0,
+                                 .controlRadius = 0,
+                                 .sheetRadius = 0,
+                                 .capsuleRadius = 0};
 }
 
 class BaseTheme {
  public:
+#ifdef ENABLE_CHINESE_VERSION
+  static constexpr int STATUS_NUMERIC_FONT_ID = -858375107;
+#else
+  static constexpr int STATUS_NUMERIC_FONT_ID = SMALL_FONT_ID;
+#endif
+
   virtual ~BaseTheme() = default;
 
   // Component drawing methods
-  void drawProgressBar(const GfxRenderer& renderer, Rect rect, size_t current, size_t total) const;
+  int measureProgressBarHeight(const GfxRenderer& renderer, int barHeight, bool showPercentage = true) const;
+  int drawProgressBar(const GfxRenderer& renderer, Rect rect, size_t current, size_t total,
+                      bool showPercentage = true) const;
   void drawBatteryLeft(const GfxRenderer& renderer, Rect rect,
                        bool showPercentage = true) const;  // Left aligned (reader mode)
-  void drawBatteryRight(const GfxRenderer& renderer, Rect rect,
-                        bool showPercentage = true) const;  // Right aligned (UI headers)
+  void drawBatteryRight(const GfxRenderer& renderer, Rect rect, bool showPercentage = true) const;
   virtual void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const;
   virtual void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                const char* btn4) const;
+  bool buttonHintsVisible() const;
+  void drawActionButton(const GfxRenderer& renderer, Rect rect, const char* label, bool active = false) const;
+  // Shared by every theme's drawButtonHints(): centres a hint label in its box,
+  // wrapping to two lines rather than overflowing when it's too wide to fit.
+  static void drawHintLabel(GfxRenderer& renderer, int fontId, const char* label, int x, int boxWidth, int boxTop,
+                            int boxHeight, int singleLineYOffset);
   virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const;
+  // Menu row height as DRAWN by drawButtonMenu. HomeActivity builds its touch
+  // grid from this, so hit bands always match the visuals (RoundedRaff derives
+  // its row height from the font, not the metrics table).
+  virtual int getMenuRowHeight(const GfxRenderer& renderer) const;
   virtual int getListRowStep(bool hasSubtitle) const;
   virtual int getListPageItems(int contentHeight, bool hasSubtitle) const;
   void drawSideScrollBar(const GfxRenderer& renderer, Rect rect, int itemCount, int pageStartIndex,
@@ -221,9 +306,11 @@ class BaseTheme {
                         const std::function<std::string(int index)>& rowSubtitle = nullptr,
                         const std::function<UIIcon(int index)>& rowIcon = nullptr,
                         const std::function<std::string(int index)>& rowValue = nullptr, bool highlightValue = false,
-                        const std::function<bool(int index)>& rowDimmed = nullptr) const;
+                        const std::function<bool(int index)>& rowDimmed = nullptr, bool showSelection = true,
+                        const std::function<bool(int index)>& rowHeading = nullptr) const;
   virtual void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title,
                           const char* subtitle = nullptr) const;
+  virtual void drawMainTabBar(const GfxRenderer& renderer, Rect rect, MainTab selected) const;
   virtual void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,
                              const char* rightLabel = nullptr) const;
   virtual void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
@@ -233,11 +320,12 @@ class BaseTheme {
   virtual void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                    const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                    bool& bufferRestored, std::function<bool()> storeCoverBuffer) const;
-  // `rowSpacing` overrides the inter-row gap when >= 0 (used by the Apps menu to halve it);
-  // pass the default -1 to keep each theme's own menuSpacing.
   virtual void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                               const std::function<std::string(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon, int rowSpacing = -1) const;
+  virtual void drawHomeMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
+                            const std::function<std::string(int index)>& buttonLabel,
+                            const std::function<UIIcon(int index)>& rowIcon) const;
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
   virtual void drawOptionPopup(const GfxRenderer& renderer, const char* title, const std::vector<std::string>& options,
                                int selectedIndex) const;
@@ -249,6 +337,7 @@ class BaseTheme {
   void drawHelpText(const GfxRenderer& renderer, Rect rect, const char* label) const;
   virtual void drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode = false,
                              int contentStartX = 0, int contentWidth = 0) const;
+  bool drawSelectionBackground(const GfxRenderer& renderer, Rect rect) const;
   virtual bool showsFileIcons() const { return false; }
 
   // Shared constants and helpers for battery drawing (used by all themes)

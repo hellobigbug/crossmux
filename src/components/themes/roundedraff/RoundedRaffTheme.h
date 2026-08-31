@@ -9,17 +9,31 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .batteryHeight = 12,
                                  .topPadding = 0,
                                  .batteryBarHeight = 20,
-                                 .headerHeight = 45,
+                                 .headerHeight = 51,
                                  .verticalSpacing = 10,
                                  .previewPadding = 12,
                                  .previewHeightPercent = 30,
                                  .contentSidePadding = 20,
                                  .listRowHeight = 42,
                                  .listWithSubtitleRowHeight = 69,
-                                 .menuRowHeight = 42,
+                                 .listRowGap = 6,
+                                 .listRowRadius = 20,
+                                 .listInset = 20,
+                                 .listSidePadding = 20,
+                                 .listSelectionStyle = 0,  // invert fill (black card)
+                                 .listScrollWidth = 4,
+                                 .listScrollSide = 0,
+                                 .listTitleBold = true,
+                                 .headerSidePadding = 18,
+                                 .headerUnderlineSize = 0,
+                                 .headerTitleAlign = 0,  // left
+                                 .headerBatterySide = 0,
+                                 .headerBatteryDetached = false,
+                                 .menuRowHeight = 42,  // not authoritative: getMenuRowHeight() derives the drawn height
                                  .menuSpacing = 6,
                                  .tabSpacing = 10,
                                  .tabBarHeight = 50,
+                                 .tabPillFullSlot = true,
                                  .scrollBarWidth = 4,
                                  .scrollBarRightOffset = 5,
                                  .homeTopPadding = 55,
@@ -27,7 +41,8 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .homeCoverHeight = 300,
                                  .homeCoverTileHeight = 350,
                                  .homeRecentBooksCount = 1,
-                                 .homeContinueReadingInMenu = true,
+                                 .homeShowRecentBookTitle = true,
+                                 .homeContinueReadingInMenu = false,
                                  .homeMenuTopOffset = 20,
                                  .buttonHintsHeight = 40,
                                  .sideButtonHintsWidth = 30,
@@ -69,7 +84,10 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .textFieldHorizontalPadding = 8,
                                  .textFieldNormalThickness = 2,
                                  .textFieldCursorThickness = 3,
-                                 .textFieldLineEndOffset = -1};
+                                 .textFieldLineEndOffset = -1,
+                                 .controlRadius = 18,
+                                 .sheetRadius = 18,
+                                 .capsuleRadius = 255};
 }
 
 class RoundedRaffTheme : public BaseTheme {
@@ -83,6 +101,7 @@ class RoundedRaffTheme : public BaseTheme {
   void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                            int selectorIndex, bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
                            std::function<bool()> storeCoverBuffer) const override;
+  int getMenuRowHeight(const GfxRenderer& renderer) const override;
   void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                       const std::function<std::string(int index)>& buttonLabel,
                       const std::function<UIIcon(int index)>& rowIcon, int rowSpacing = -1) const override;
@@ -95,8 +114,8 @@ class RoundedRaffTheme : public BaseTheme {
                 const std::function<std::string(int index)>& rowSubtitle = nullptr,
                 const std::function<UIIcon(int index)>& rowIcon = nullptr,
                 const std::function<std::string(int index)>& rowValue = nullptr, bool highlightValue = false,
-                const std::function<bool(int index)>& rowDimmed = nullptr) const override;
+                const std::function<bool(int index)>& rowDimmed = nullptr, bool showSelection = true,
+                const std::function<bool(int index)>& rowHeading = nullptr) const override;
   void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                        const char* btn4) const override;
-  bool homeMenuShowsContinueReading() const { return true; }
 };

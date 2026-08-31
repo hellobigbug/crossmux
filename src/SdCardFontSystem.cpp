@@ -3,6 +3,7 @@
 #include <GfxRenderer.h>
 #include <Logging.h>
 
+#include <cstring>
 #include <iterator>
 
 #include "CrossPointSettings.h"
@@ -40,6 +41,7 @@ constexpr UiFontSize kUiFontSizes[] = {
 
 void SdCardFontSystem::begin(GfxRenderer& renderer) {
   registry_.discover();
+  adoptCompleteChineseNotoSans();
 
   // Register this system as the SD font ID resolver in settings.
   // Uses a static trampoline since CrossPointSettings stores a plain function pointer.
@@ -52,7 +54,7 @@ void SdCardFontSystem::begin(GfxRenderer& renderer) {
   if (SETTINGS.sdFontFamilyName[0] != '\0') {
     const auto* family = registry_.findFamily(SETTINGS.sdFontFamilyName);
     if (family) {
-      if (manager_.loadFamily(*family, renderer, SETTINGS.fontPointSize)) {
+      if (manager_.loadFamily(*family, renderer, SETTINGS.fontPointSize, SETTINGS.sdFontFlashPreload != 0)) {
         snapFontPointSizeTo(manager_.currentPointSize());
         setupUiFallbacks(renderer);
         LOG_DBG("SDFS", "Loaded SD card font family: %s", SETTINGS.sdFontFamilyName);
@@ -69,7 +71,7 @@ void SdCardFontSystem::begin(GfxRenderer& renderer) {
   LOG_DBG("SDFS", "SD font system ready (%d families discovered)", registry_.getFamilyCount());
 }
 
-void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
+void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer, bool allowFlashCache) {
   // If the web server (or another task) installed/deleted fonts, re-discover.
   // Track whether we just re-discovered so we can force a reload below even
   // when the wanted family/size still maps to the same point size — the file
@@ -78,10 +80,12 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
   if (registryWasDirty) {
     LOG_DBG("SDFS", "Registry dirty — re-discovering fonts");
     registry_.discover();
+    adoptCompleteChineseNotoSans();
   }
 
   const char* wantedFamily = SETTINGS.sdFontFamilyName;
   const std::string& currentFamily = manager_.currentFamilyName();
+  const bool preferFlash = allowFlashCache && SETTINGS.sdFontFlashPreload != 0;
 
   if (wantedFamily[0] == '\0') {
     if (!currentFamily.empty()) {
@@ -122,7 +126,7 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
 
   const auto* family = registry_.findFamily(wantedFamily);
   if (family) {
-    if (manager_.loadFamily(*family, renderer, SETTINGS.fontPointSize)) {
+    if (manager_.loadFamily(*family, renderer, SETTINGS.fontPointSize, preferFlash)) {
       snapFontPointSizeTo(manager_.currentPointSize());
       setupUiFallbacks(renderer);
       LOG_DBG("SDFS", "Loaded SD font family: %s", wantedFamily);
@@ -138,10 +142,30 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
 
 void SdCardFontSystem::releaseLoadedFont(GfxRenderer& renderer) { manager_.unloadAll(renderer); }
 
+bool SdCardFontSystem::adoptCompleteChineseNotoSans() {
+#ifdef ENABLE_CHINESE_VERSION
+  if (SETTINGS.contentProfile != CrossPointSettings::ContentProfile::China || SETTINGS.sdFontFamilyName[0] != '\0' ||
+      !registry_.findFamily(COMPLETE_CHINESE_NOTO_SANS_FAMILY))
+    return false;
+
+  strncpy(SETTINGS.sdFontFamilyName, COMPLETE_CHINESE_NOTO_SANS_FAMILY, sizeof(SETTINGS.sdFontFamilyName) - 1);
+  SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
+  SETTINGS.fontFamily = CrossPointSettings::NOTOSANS;
+  SETTINGS.sdFontFlashPreload = 0;
+  if (!SETTINGS.saveToFile()) {
+    LOG_ERR("SDFS", "Failed to save automatic NotoSansSC selection");
+  }
+  LOG_INF("SDFS", "Using installed NotoSansSC in place of the Chinese built-in font");
+  return true;
+#else
+  return false;
+#endif
+}
+
 void SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer) {
 #ifdef ENABLE_CHINESE_VERSION
-  // The CN firmware's built-in 8/10/12pt UI fonts cover its Simplified-Chinese
-  // interface. Keep only the selected reader-size SD font resident: loading
+  // Unified firmware has built-in 8/10/12pt Simplified-Chinese UI fallbacks.
+  // Keep only the selected reader-size SD font resident: loading
   // three more broad-CJK sizes leaves too little contiguous heap for EPUB image
   // decoding and glyph prewarm.
   (void)renderer;

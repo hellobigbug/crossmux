@@ -10,7 +10,6 @@
 #include <cstdio>
 
 #include "StandbyTime.h"
-#include "fontIds.h"
 
 void SloppyClockFace::onEnter() {
   style_ = makeUniqueNoThrow<sloppy::Style>();
@@ -40,13 +39,13 @@ void SloppyClockFace::onPageNext() { onShake(esp_random() ^ static_cast<uint32_t
 
 void SloppyClockFace::regenerate(uint32_t seed) {
   sloppy::rollStyle(seed, *style_);
-  sloppy::preRollSeeds(seed, sloppy::getAlphabet(style_->alphabet), *seeds_);
+  sloppy::prepareSeeds(seed, *style_, *seeds_);
   lastMin_ = -1;
 }
 
 bool SloppyClockFace::tick() {
   if (!style_ || !seeds_) return false;
-  const uint32_t nowMin = standby_time::getMinuteTick();
+  const uint32_t nowMin = standby_time::getMinuteTick(startMs_);
   if (static_cast<int32_t>(nowMin) == lastMin_) return false;
   lastMin_ = static_cast<int32_t>(nowMin);
   return true;
@@ -56,13 +55,11 @@ void SloppyClockFace::render(GfxRenderer& renderer, const Rect& viewport) {
   if (!style_ || !seeds_) return;
   unsigned hh = 0;
   unsigned mm = 0;
-  if (!standby_time::getNowHHMM(hh, mm)) {
-    renderer.drawCenteredText(UI_12_FONT_ID, viewport.y + viewport.height / 2, "--:--", true, EpdFontFamily::BOLD);
-    return;
-  }
+  standby_time::getNowHHMM(startMs_, hh, mm);
   char buf[8];
   std::snprintf(buf, sizeof(buf), "%02u\n%02u", hh, mm);
-  sloppy::draw(renderer, *style_, *seeds_, buf, viewport);
+  sloppy::draw(renderer, *style_, *seeds_, buf,
+               sloppy::Bounds{viewport.x, viewport.y, viewport.width, viewport.height});
 }
 
 uint32_t SloppyClockFace::secondsUntilNextWake() const {
