@@ -17,6 +17,7 @@
 #include "components/themes/lyra/Lyra3CoversTheme.h"
 #include "components/themes/lyra/LyraCarouselTheme.h"
 #include "components/themes/lyra/LyraTheme.h"
+#include "components/themes/nokia/NokiaTheme.h"
 #include "components/themes/roundedraff/RoundedRaffTheme.h"
 
 UITheme UITheme::instance;
@@ -63,6 +64,11 @@ void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
       LOG_DBG("UI", "Using INX theme");
       nextTheme = makeUniqueNoThrow<InxTheme>();
       nextMetrics = &InxMetrics::values;
+      break;
+    case CrossPointSettings::UI_THEME::NOKIA:
+      LOG_DBG("UI", "Using Nokia theme");
+      nextTheme = makeUniqueNoThrow<NokiaTheme>();
+      nextMetrics = &NokiaMetrics::values;
       break;
     default:
       LOG_ERR("UI", "Unknown theme %d, falling back to Classic", static_cast<int>(type));
