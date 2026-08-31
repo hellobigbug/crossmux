@@ -1,6 +1,7 @@
 #include "QuoteOfDayActivity.h"
 
 #include <Arduino.h>
+#include <I18n.h>
 #include <esp_system.h>
 #include <time.h>
 
@@ -16,21 +17,21 @@ struct Quote {
 };
 
 constexpr Quote kQuotes[] = {
-    {u8"读万卷书，行万里路。", u8"刘彝"},
-    {u8"书籍是全世界的营养品。", u8"莎士比亚"},
-    {u8"生活不是为了赶路，而是为了感受路。", u8"佚名"},
-    {u8"世界上只有一种真正的英雄主义，那就是在认清生活的真相后依然热爱生活。", u8"罗曼·罗兰"},
-    {u8"路漫漫其修远兮，吾将上下而求索。", u8"屈原"},
-    {u8"黑夜给了我黑色的眼睛，我却用它寻找光明。", u8"顾城"},
-    {u8"种一棵树最好的时间是十年前，其次是现在。", u8"佚名"},
-    {u8"你现在的努力，是为了让未来的自己感谢现在的自己。", u8"佚名"},
-    {u8"人生的道路虽然漫长，但紧要处常常只有几步。", u8"柳青"},
-    {u8"凡是过往，皆为序章。", u8"莎士比亚"},
-    {u8"不必太在意别人的目光，因为真正的观众只有你自己。", u8"佚名"},
-    {u8"你无法改变风向，但可以调整航向。", u8"佚名"},
-    {u8"愿你眼里有光，心中有海。", u8"佚名"},
-    {u8"与其抱怨黑暗，不如点亮蜡烛。", u8"佚名"},
-    {u8"脚步丈量不到的，阅读可以。", u8"佚名"},
+    {"读万卷书，行万里路。", "刘彝"},
+    {"书籍是全世界的营养品。", "莎士比亚"},
+    {"生活不是为了赶路，而是为了感受路。", "佚名"},
+    {"世界上只有一种真正的英雄主义，那就是在认清生活的真相后依然热爱生活。", "罗曼·罗兰"},
+    {"路漫漫其修远兮，吾将上下而求索。", "屈原"},
+    {"黑夜给了我黑色的眼睛，我却用它寻找光明。", "顾城"},
+    {"种一棵树最好的时间是十年前，其次是现在。", "佚名"},
+    {"你现在的努力，是为了让未来的自己感谢现在的自己。", "佚名"},
+    {"人生的道路虽然漫长，但紧要处常常只有几步。", "柳青"},
+    {"凡是过往，皆为序章。", "莎士比亚"},
+    {"不必太在意别人的目光，因为真正的观众只有你自己。", "佚名"},
+    {"你无法改变风向，但可以调整航向。", "佚名"},
+    {"愿你眼里有光，心中有海。", "佚名"},
+    {"与其抱怨黑暗，不如点亮蜡烛。", "佚名"},
+    {"脚步丈量不到的，阅读可以。", "佚名"},
 };
 constexpr int kQuoteCount = static_cast<int>(sizeof(kQuotes) / sizeof(kQuotes[0]));
 
@@ -73,7 +74,7 @@ void QuoteOfDayActivity::render(RenderLock&&) {
   const int contentH = pageHeight - contentY - metrics.buttonHintsHeight - metrics.verticalSpacing - 40;
 
   // Large opening quote glyph.
-  renderer.drawText(UI_12_FONT_ID, contentX, contentY, u8"“", true, EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, contentX, contentY, "“", true, EpdFontFamily::BOLD);
 
   // Wrap the quote body (CJK renders via UI_12 -> CJK_UI_12 fallback).
   const auto lines = renderer.wrappedText(UI_12_FONT_ID, quote_, contentW, 5, EpdFontFamily::REGULAR);

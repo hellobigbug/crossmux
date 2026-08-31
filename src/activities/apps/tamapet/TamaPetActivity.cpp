@@ -1,6 +1,7 @@
 #include "TamaPetActivity.h"
 
 #include <Arduino.h>
+#include <I18n.h>
 #include <algorithm>
 
 #include "components/UITheme.h"

@@ -8,7 +8,7 @@
 
 namespace {
 
-constexpr const char* kModes[] = {u8"制冷", u8"制热", u8"送风", u8"除湿"};
+constexpr const char* kModes[] = {"制冷", "制热", "送风", "除湿"};
 constexpr int kModeCount = static_cast<int>(sizeof(kModes) / sizeof(kModes[0]));
 
 constexpr int kMinTemp = 16;

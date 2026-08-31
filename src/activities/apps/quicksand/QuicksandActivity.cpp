@@ -1,6 +1,7 @@
 #include "QuicksandActivity.h"
 
 #include <Arduino.h>
+#include <I18n.h>
 #include <math.h>
 
 #include "components/UITheme.h"
