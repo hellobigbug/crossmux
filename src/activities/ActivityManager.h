@@ -130,6 +130,15 @@ class ActivityManager {
   void goToBuddy();
   void goToStandby();
   void goToGame2048();
+  void goToTamaPet();
+  void goToWhatToEat();
+  void goToBookAnswers();
+  void goToHoroscope();
+  void goToQuoteOfDay();
+  void goToMovie();
+  void goToRandomQuote();
+  void goToQuicksand();
+  void goToCyberAC();
 #ifdef ENABLE_CHINESE_VERSION
   void goToChineseChess();
 #endif

@@ -38,7 +38,16 @@ enum class AppId : uint8_t {
   OpdsBrowser = 14,
   Calculator = 15,
   Woodfish = 16,
-  Count = 17,
+  TamaPet = 18,
+  WhatToEat = 19,
+  BookAnswers = 20,
+  Horoscope = 21,
+  QuoteOfDay = 22,
+  Movie = 23,
+  RandomQuote = 24,
+  Quicksand = 25,
+  CyberAC = 26,
+  Count = 27,
 };
 
 struct AppEntry {
@@ -69,6 +78,15 @@ constexpr AppEntry kAppEntries[] = {
     {AppId::PixelSwitch, StrId::STR_PIXEL_SWITCH_TITLE, UIIcon::PixelSwitch, &ActivityManager::goToPixelSwitch},
     {AppId::Calculator, StrId::STR_CALCULATOR_TITLE, UIIcon::Calculator, &ActivityManager::goToCalculator},
     {AppId::Woodfish, StrId::STR_WOODFISH_TITLE, UIIcon::Woodfish, &ActivityManager::goToWoodfish},
+    {AppId::TamaPet, StrId::STR_TAMA_PET_TITLE, UIIcon::Buddy, &ActivityManager::goToTamaPet},
+    {AppId::WhatToEat, StrId::STR_WHAT_TO_EAT_TITLE, UIIcon::Book, &ActivityManager::goToWhatToEat},
+    {AppId::BookAnswers, StrId::STR_BOOK_ANSWERS_TITLE, UIIcon::Bookmark, &ActivityManager::goToBookAnswers},
+    {AppId::Horoscope, StrId::STR_HOROSCOPE_TITLE, UIIcon::ReadingStats, &ActivityManager::goToHoroscope},
+    {AppId::QuoteOfDay, StrId::STR_QUOTE_OF_DAY_TITLE, UIIcon::Text, &ActivityManager::goToQuoteOfDay},
+    {AppId::Movie, StrId::STR_MOVIE_TITLE, UIIcon::Image, &ActivityManager::goToMovie},
+    {AppId::RandomQuote, StrId::STR_RANDOM_QUOTE_TITLE, UIIcon::Text, &ActivityManager::goToRandomQuote},
+    {AppId::Quicksand, StrId::STR_QUICKSAND_TITLE, UIIcon::Avatar, &ActivityManager::goToQuicksand},
+    {AppId::CyberAC, StrId::STR_CYBER_AC_TITLE, UIIcon::Settings, &ActivityManager::goToCyberAC},
     {AppId::Standby, StrId::STR_STANDBY_TITLE, UIIcon::Standby, &ActivityManager::goToStandby},
 };
 

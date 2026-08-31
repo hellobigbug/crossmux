@@ -19,6 +19,15 @@
 #include "apps/buddy/BuddyActivity.h"
 #include "apps/calculator/CalculatorActivity.h"
 #include "apps/sokoban/SokobanGameActivity.h"
+#include "apps/whattoeat/WhatToEatActivity.h"
+#include "apps/bookanswers/BookAnswersActivity.h"
+#include "apps/quoteofday/QuoteOfDayActivity.h"
+#include "apps/horoscope/HoroscopeActivity.h"
+#include "apps/cyberac/CyberACActivity.h"
+#include "apps/movie/MovieActivity.h"
+#include "apps/randomquote/RandomQuoteActivity.h"
+#include "apps/quicksand/QuicksandActivity.h"
+#include "apps/tamapet/TamaPetActivity.h"
 #ifdef ENABLE_CHINESE_VERSION
 #include "apps/chinese-chess/ChineseChessMenuActivity.h"
 #endif
@@ -516,6 +525,16 @@ void ActivityManager::goToAirPage() { replaceActivityWith<AirPageActivity>(); }
 void ActivityManager::goToBuddy() { replaceActivityWith<BuddyActivity>(); }
 
 void ActivityManager::goToStandby() { replaceActivityWith<StandbyActivity>(); }
+
+void ActivityManager::goToTamaPet() { replaceActivityWith<TamaPetActivity>(); }
+void ActivityManager::goToWhatToEat() { replaceActivityWith<WhatToEatActivity>(); }
+void ActivityManager::goToBookAnswers() { replaceActivityWith<BookAnswersActivity>(); }
+void ActivityManager::goToHoroscope() { replaceActivityWith<HoroscopeActivity>(); }
+void ActivityManager::goToQuoteOfDay() { replaceActivityWith<QuoteOfDayActivity>(); }
+void ActivityManager::goToMovie() { replaceActivityWith<MovieActivity>(); }
+void ActivityManager::goToRandomQuote() { replaceActivityWith<RandomQuoteActivity>(); }
+void ActivityManager::goToQuicksand() { replaceActivityWith<QuicksandActivity>(); }
+void ActivityManager::goToCyberAC() { replaceActivityWith<CyberACActivity>(); }
 
 #ifdef ENABLE_CHINESE_VERSION
 void ActivityManager::goToChineseChess() { replaceActivityWith<ChineseChessMenuActivity>(); }
