@@ -17,5 +17,9 @@ class HoroscopeActivity final : public Activity {
   int signIndex_ = 0;
   const char* rating_ = nullptr;
   const char* overall_ = nullptr;
+  int luckyNum_ = 0;
+  const char* luckyColor_ = nullptr;
+  const char* favorable_ = nullptr;
+  const char* avoid_ = nullptr;
   void roll();
 };

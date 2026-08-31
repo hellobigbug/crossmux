@@ -19,8 +19,13 @@ class TamaPetActivity final : public Activity {
   static int overalHunger_, overalHappiness_, energy_;
   static bool sleeping_;
   static unsigned long lastTick_;
+  static unsigned long lastPatMs_;
+  const char* bubbleMsg_ = nullptr;
+  unsigned long bubbleUntilMs_ = 0;
   void tick(unsigned long now);
   void feed();
   void play();
   void toggleSleep();
+  void pat(unsigned long now);
+  void showBubble(const char* msg);
 };

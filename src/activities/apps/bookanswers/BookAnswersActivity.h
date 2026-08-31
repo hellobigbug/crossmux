@@ -17,5 +17,9 @@ class BookAnswersActivity final : public Activity {
  private:
   const char* answer_ = nullptr;
   int page_ = 1;
+  bool revealing_ = false;      // page-turn reveal in progress
+  unsigned long revealUntilMs_ = 0;
+  unsigned long animMs_ = 0;
+  int animPage_ = 0;
   void ask();
 };

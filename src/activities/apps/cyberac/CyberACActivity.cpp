@@ -21,10 +21,31 @@ constexpr int kBodyRadius = 22;
 
 void CyberACActivity::togglePower() {
   on_ = !on_;
+  if (on_) {
+    // Power-on reveal: temps flash outline for ~startup period before lighting.
+    booting_ = true;
+    bootUntilMs_ = millis() + 800;
+    phase_ = 0;
+  } else {
+    booting_ = false;
+  }
   requestUpdate();
 }
 
 void CyberACActivity::loop() {
+  const unsigned long now = millis();
+
+  // Airflow animation: advance the phase so the stream looks like it breathes.
+  if (on_ && now - animMs_ >= 170) {
+    animMs_ = now;
+    ++phase_;
+    requestUpdate();
+  }
+  if (booting_ && now >= bootUntilMs_) {
+    booting_ = false;
+    requestUpdate();
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     activityManager.goToApps();
     return;
@@ -75,18 +96,30 @@ void CyberACActivity::render(RenderLock&&) {
     const int y = ventY0 + ((ventY1 - ventY0) * i) / 3;
     renderer.drawLine(bodyX + 12, y, bodyX + kBodyW - 12, y, 1, lit);
   }
-  // "Air stream" arcs billowing out to the right when on.
+  // "Air stream" arcs billowing out to the right when on. The phase nudges the
+  // stream so it looks like it is continuously flowing.
   if (lit) {
+    const int flow = phase_ % 3;
     for (int i = 0; i < 3; ++i) {
       const int cy = bodyY + kBodyH * 5 / 8 + ((ventY1 - ventY0) * i) / 3;
-      renderer.drawArc(kBodyW / 2, bodyX + kBodyW - 10, cy, 1, 0, 1, true);
+      const int reach = 10 + flow * 6 + (i == 1 ? 4 : 0);
+      renderer.drawArc(kBodyW / 2 + reach, bodyX + kBodyW - 10, cy, 1, 0, 1, true);
+      renderer.drawLine(bodyX + kBodyW - 10 + reach + 6, cy, bodyX + kBodyW - 10 + reach + 14, cy, 1, true);
     }
   }
-  // Status / temperature readout in the top band.
+  // Power LED in the top-right corner of the unit.
+  const int ledX = bodyX + kBodyW - 18;
+  const int ledY = bodyY + 14;
+  renderer.drawArc(7, ledX, ledY, 1, -1, 1, true);
+  if (lit) renderer.fillRoundedRect(ledX - 5, ledY - 5, 10, 10, 5, Color::Black);
+
+  // Status / temperature readout in the top band. During power-on it is drawn
+  // inverted ("off") so it appears to flash on.
   char tempText[8];
   snprintf(tempText, sizeof(tempText), "%d°C", temp_);
-  renderer.drawCenteredText(UI_12_FONT_ID, bodyY + 14, tempText, lit, EpdFontFamily::BOLD);
-  renderer.drawCenteredText(SMALL_FONT_ID, bodyY + 14 + renderer.getLineHeight(UI_12_FONT_ID), kModes[mode_], lit,
+  const bool litReadout = lit && !booting_;
+  renderer.drawCenteredText(UI_12_FONT_ID, bodyY + 14, tempText, litReadout, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(SMALL_FONT_ID, bodyY + 14 + renderer.getLineHeight(UI_12_FONT_ID), kModes[mode_], litReadout,
                             EpdFontFamily::REGULAR);
 
   // Remote button row (drawn controls mirror the physical button mapping).

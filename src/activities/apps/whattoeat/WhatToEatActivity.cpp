@@ -23,6 +23,11 @@ constexpr const char* kDishes[] = {
 };
 constexpr int kDishCount = static_cast<int>(sizeof(kDishes) / sizeof(kDishes[0]));
 
+// Wheel-spin animation: a short reel of randomly sampled dishes that decelerates
+// before settling. Frame count + base period are cheap, stack-only constants.
+constexpr int kSpinFrames = 22;
+constexpr unsigned long kSpinBaseMs = 40;
+
 }  // namespace
 
 void WhatToEatActivity::onEnter() {
@@ -31,11 +36,38 @@ void WhatToEatActivity::onEnter() {
 }
 
 void WhatToEatActivity::pick() {
-  dish_ = kDishes[esp_random() % kDishCount];
+  if (!spinning_) {
+    spinning_ = true;
+    spinLeft_ = kSpinFrames;
+    spinDish_ = dish_;
+  }
+  // Restart the reel from wherever we are when re-rolled mid-spin.
+  nextFrameMs_ = millis();
   requestUpdate();
 }
 
 void WhatToEatActivity::loop() {
+  if (spinning_) {
+    const unsigned long now = millis();
+    if (now >= nextFrameMs_) {
+      spinDish_ = kDishes[esp_random() % kDishCount];
+      --spinLeft_;
+      // Decelerate: frame gap grows as the reel approaches the end.
+      const unsigned long period = kSpinBaseMs + (kSpinFrames - spinLeft_) * 18;
+      nextFrameMs_ = now + period;
+      if (spinLeft_ <= 0) {
+        dish_ = spinDish_;
+        spinning_ = false;
+      }
+      requestUpdate();
+    }
+    // While spinning, ignore re-rolls but still allow leaving.
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      activityManager.goToApps();
+    }
+    return;
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     activityManager.goToApps();
     return;
@@ -66,8 +98,23 @@ void WhatToEatActivity::render(RenderLock&&) {
   const int textY = marginTop + cardH / 2 - renderer.getLineHeight(UI_12_FONT_ID) / 2;
   renderer.drawCenteredText(UI_12_FONT_ID, textY, tr(STR_WHAT_TO_EAT_QUESTION), false,
                             EpdFontFamily::REGULAR);
+  const bool rolling = spinning_;
+  const char* shown = rolling ? spinDish_ : dish_;
   const int dishY = textY + renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing;
-  renderer.drawCenteredText(UI_12_FONT_ID, dishY, dish_ ? dish_ : "", true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_12_FONT_ID, dishY, shown ? shown : "", rolling,
+                            EpdFontFamily::BOLD);
+
+  // Reel indicator: a row of three lines that "progresses" while spinning and
+  // becomes a full bar once the wheel settles.
+  const int barTop = dishY + renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing + 14;
+  const int barW = 120;
+  const int barX = pageWidth / 2 - barW / 2;
+  const int segW = (barW - 4) / 3;
+  const int filled = rolling ? (kSpinFrames - spinLeft_) % 3 + 1 : 3;
+  for (int s = 0; s < 3; ++s) {
+    renderer.fillRoundedRect(barX + s * (segW + 2), barTop, segW, 4, 2, (s < filled) ? Color::Black : Color::White);
+    renderer.drawRoundedRect(barX + s * (segW + 2), barTop, segW, 4, 1, 2, true);
+  }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_WHAT_TO_EAT_REROLL), "", tr(STR_WHAT_TO_EAT_REROLL));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

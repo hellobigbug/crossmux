@@ -32,6 +32,13 @@ constexpr const char* kOverall[] = {
 constexpr int kRatingCount = static_cast<int>(sizeof(kRatings) / sizeof(kRatings[0]));
 constexpr int kOverallCount = static_cast<int>(sizeof(kOverall) / sizeof(kOverall[0]));
 
+constexpr const char* kLuckyColors[] = {"金色", "红色", "蓝色", "绿色", "紫色", "米白", "橙色", "天蓝"};
+constexpr const char* kFavorable[] = {"出行", "会见朋友", "读书", "运动", "谈判", "整理", "表白", "面试"};
+constexpr const char* kAvoid[] = {"熬夜", "冲动消费", "争执", "冒险", "口舌之争", "过度食用甜食", "久坐不动", "轻信他人"};
+constexpr int kLuckyColorCount = static_cast<int>(sizeof(kLuckyColors) / sizeof(kLuckyColors[0]));
+constexpr int kFavorableCount = static_cast<int>(sizeof(kFavorable) / sizeof(kFavorable[0]));
+constexpr int kAvoidCount = static_cast<int>(sizeof(kAvoid) / sizeof(kAvoid[0]));
+
 }  // namespace
 
 void HoroscopeActivity::onEnter() {
@@ -42,6 +49,10 @@ void HoroscopeActivity::onEnter() {
 void HoroscopeActivity::roll() {
   rating_ = kRatings[esp_random() % kRatingCount];
   overall_ = kOverall[esp_random() % kOverallCount];
+  luckyNum_ = 1 + esp_random() % 99;
+  luckyColor_ = kLuckyColors[esp_random() % kLuckyColorCount];
+  favorable_ = kFavorable[esp_random() % kFavorableCount];
+  avoid_ = kAvoid[esp_random() % kAvoidCount];
   requestUpdate();
 }
 
@@ -94,6 +105,34 @@ void HoroscopeActivity::render(RenderLock&&) {
                       EpdFontFamily::REGULAR);
     y += renderer.getLineHeight(UI_12_FONT_ID);
   }
+
+  // Lucky details row: number + color drawn alongside their labels.
+  char numStr[8];
+  snprintf(numStr, sizeof(numStr), "%d", luckyNum_);
+  const int luckyRowY = boxY + boxH + metrics.verticalSpacing + 8;
+  renderer.drawText(UI_12_FONT_ID, contentLeft, luckyRowY, tr(STR_HOROSCOPE_LUCKY_NUM), true, EpdFontFamily::BOLD);
+  const int numPrefixW = renderer.getTextWidth(UI_12_FONT_ID, tr(STR_HOROSCOPE_LUCKY_NUM), EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, contentLeft + numPrefixW, luckyRowY, numStr, true, EpdFontFamily::REGULAR);
+
+  const char* color = luckyColor_ ? luckyColor_ : "";
+  const int colorX = contentLeft + numPrefixW + renderer.getTextWidth(UI_12_FONT_ID, numStr, EpdFontFamily::REGULAR) + 18;
+  renderer.drawText(UI_12_FONT_ID, colorX, luckyRowY, tr(STR_HOROSCOPE_LUCKY_COLOR), true, EpdFontFamily::BOLD);
+  const int colorPrefixW = renderer.getTextWidth(UI_12_FONT_ID, tr(STR_HOROSCOPE_LUCKY_COLOR), EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, colorX + colorPrefixW, luckyRowY, color, true, EpdFontFamily::REGULAR);
+
+  // 宜 / 忌 chips (prefix bold, value regular on the same row).
+  const char* fav = favorable_ ? favorable_ : "";
+  const char* avo = avoid_ ? avoid_ : "";
+
+  const int chipY = luckyRowY + renderer.getLineHeight(UI_12_FONT_ID) + 6;
+  renderer.drawText(UI_12_FONT_ID, contentLeft, chipY, tr(STR_HOROSCOPE_FAVORABLE), true, EpdFontFamily::BOLD);
+  const int favPrefixW = renderer.getTextWidth(UI_12_FONT_ID, tr(STR_HOROSCOPE_FAVORABLE), EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, contentLeft + favPrefixW, chipY, fav, true, EpdFontFamily::REGULAR);
+
+  const int avoidY = chipY + renderer.getLineHeight(UI_12_FONT_ID) + 4;
+  renderer.drawText(UI_12_FONT_ID, contentLeft, avoidY, tr(STR_HOROSCOPE_AVOID), true, EpdFontFamily::BOLD);
+  const int avoPrefixW = renderer.getTextWidth(UI_12_FONT_ID, tr(STR_HOROSCOPE_AVOID), EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, contentLeft + avoPrefixW, avoidY, avo, true, EpdFontFamily::REGULAR);
 
   const auto labels =
       mappedInput.mapLabels(tr(STR_BACK), tr(STR_HOROSCOPE_ROLL), tr(STR_HOROSCOPE_PREV), tr(STR_HOROSCOPE_NEXT));

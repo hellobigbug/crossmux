@@ -18,5 +18,9 @@ class CyberACActivity final : public Activity {
   bool on_ = false;
   int temp_ = 26;
   int mode_ = 0;  // index into kModes
+  int phase_ = 0;              // airflow animation phase
+  unsigned long animMs_ = 0;   // last airflow frame timestamp
+  bool booting_ = false;       // brief power-on reveal animation
+  unsigned long bootUntilMs_ = 0;
   void togglePower();
 };

@@ -30,10 +30,33 @@ void BookAnswersActivity::onEnter() {
 void BookAnswersActivity::ask() {
   answer_ = kAnswers[esp_random() % kAnswerCount];
   page_ = randPage();
+  // Page-turn reveal: briefly flip through pages before the answer lands.
+  revealing_ = true;
+  revealUntilMs_ = millis() + 650;
+  animMs_ = millis();
+  animPage_ = page_;
   requestUpdate();
 }
 
 void BookAnswersActivity::loop() {
+  const unsigned long now = millis();
+  if (revealing_) {
+    // Flip the page number upward to sell the "turning pages" illusion.
+    if (now - animMs_ >= 90) {
+      animMs_ = now;
+      animPage_ = (animPage_ + (1 + static_cast<int>(esp_random() % 25))) % 400 + 1;
+      requestUpdate();
+    }
+    if (now >= revealUntilMs_) {
+      revealing_ = false;
+      requestUpdate();
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      activityManager.goToApps();
+    }
+    return;
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     activityManager.goToApps();
     return;
@@ -60,12 +83,21 @@ void BookAnswersActivity::render(RenderLock&&) {
   renderer.fillRoundedRect(cx, marginTop, cardW, cardH, metrics.controlRadius, Color::White);
   renderer.drawRoundedRect(cx, marginTop, cardW, cardH, 2, metrics.controlRadius, true);
 
-  char answer[8];
-  snprintf(answer, sizeof(answer), "%d", page_);
-  renderer.drawCenteredText(SMALL_FONT_ID, marginTop + 30, answer, false, EpdFontFamily::REGULAR);
+  char pageText[8];
+  snprintf(pageText, sizeof(pageText), "%d", revealing_ ? animPage_ : page_);
+  renderer.drawCenteredText(SMALL_FONT_ID, marginTop + 30, pageText, false, EpdFontFamily::REGULAR);
 
+  // During the reveal we show the "turning pages" message; once it lands, show
+  // the oracular answer with a subtle underline flourish.
   const int answerY = marginTop + cardH / 2 - renderer.getLineHeight(UI_12_FONT_ID) / 2;
-  renderer.drawCenteredText(UI_12_FONT_ID, answerY, answer_ ? answer_ : "", true, EpdFontFamily::BOLD);
+  if (revealing_) {
+    renderer.drawCenteredText(UI_12_FONT_ID, answerY, tr(STR_BOOK_ANSWERS_OPENING), true, EpdFontFamily::BOLD);
+  } else {
+    renderer.drawCenteredText(UI_12_FONT_ID, answerY, answer_ ? answer_ : "", true, EpdFontFamily::BOLD);
+    const int answerW = renderer.getTextWidth(UI_12_FONT_ID, answer_ ? answer_ : "", EpdFontFamily::BOLD);
+    renderer.drawLine(cx + (cardW - answerW) / 2, answerY + renderer.getLineHeight(UI_12_FONT_ID), cx + (cardW + answerW) / 2,
+                      answerY + renderer.getLineHeight(UI_12_FONT_ID), 2, true);
+  }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_BOOK_ANSWERS_RETURN), "", tr(STR_BOOK_ANSWERS_RETURN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

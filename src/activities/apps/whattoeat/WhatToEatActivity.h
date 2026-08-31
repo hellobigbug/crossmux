@@ -15,6 +15,10 @@ class WhatToEatActivity final : public Activity {
   void render(RenderLock&&) override;
 
  private:
-  const char* dish_ = nullptr;
+  const char* dish_ = nullptr;  // settled dish
+  const char* spinDish_ = nullptr;  // candidate shown while the wheel spins
+  bool spinning_ = false;
+  int spinLeft_ = 0;
+  unsigned long nextFrameMs_ = 0;
   void pick();
 };

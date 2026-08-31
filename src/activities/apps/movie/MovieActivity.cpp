@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <I18n.h>
 #include <esp_system.h>
+#include <math.h>
 
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -31,6 +32,27 @@ constexpr Movie kMovies[] = {
     {"三傻大闹宝莱坞", "2009", "剧情/喜剧", "以乐观与热爱反抗僵化教育，追求真正的自我。"},
 };
 constexpr int kMovieCount = static_cast<int>(sizeof(kMovies) / sizeof(kMovies[0]));
+
+// Draw a filled 5-pointed star centred at (cx, cy) with the given outer radius.
+// Rotation is fixed; used purely for the rating row.
+void drawStar(GfxRenderer& renderer, const int cx, const int cy, const int radius, const bool filled) {
+  int xPts[10];
+  int yPts[10];
+  const int inner = radius * 2 / 5;
+  for (int i = 0; i < 10; ++i) {
+    const float ang = (i * 36 - 90) * 3.14159265f / 180.0f;
+    const int r = (i % 2 == 0) ? radius : inner;
+    xPts[i] = cx + static_cast<int>(r * cosf(ang));
+    yPts[i] = cy + static_cast<int>(r * sinf(ang));
+  }
+  if (filled) {
+    renderer.fillPolygon(xPts, yPts, 10, true);
+  } else {
+    for (int i = 0; i < 10; ++i) {
+      renderer.drawLine(xPts[i], yPts[i], xPts[(i + 1) % 10], yPts[(i + 1) % 10], 1, true);
+    }
+  }
+}
 
 }  // namespace
 
@@ -91,6 +113,15 @@ void MovieActivity::render(RenderLock&&) {
   char meta[32];
   snprintf(meta, sizeof(meta), "%s  ·  %s", m.year, m.genre);
   renderer.drawText(SMALL_FONT_ID, titleX, y, meta, true, EpdFontFamily::REGULAR);
+
+  // Star rating row (5 stars). Deterministic per film; filled stars earned.
+  const int rating = 3 + (static_cast<int>(index_ * 7) % 3);
+  const int starY = y + renderer.getLineHeight(SMALL_FONT_ID) + 6;
+  const int starR = 6;
+  const int starGap = starR * 2 + 4;
+  for (int s = 0; s < 5; ++s) {
+    drawStar(renderer, titleX + starR + s * starGap, starY, starR, s < rating);
+  }
 
   // Synopsis card below.
   const int boxTop = contentTop + posterH + metrics.verticalSpacing;
