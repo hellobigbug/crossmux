@@ -785,7 +785,9 @@ bool SettingsActivity::handleButtons() {
 bool SettingsActivity::usesAccordion() const { return UITheme::getInstance().hasMainTabs(); }
 
 bool SettingsActivity::usesGridLayout() const {
-  return !usesAccordion() && UITheme::getInstance().getType() == CrossPointSettings::UI_THEME::NOKIA;
+  // The 552×768 design contract uses a list-style settings screen
+  // (segmented tabs + outlined rows), so the Nokia grid is disabled.
+  return false;
 }
 
 const char* SettingsActivity::tabLabel(const int index) const {
@@ -1373,7 +1375,7 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   // maxLines=2 also marks the style explicitly set (an all-default smallText
   // fails textStyleUnset and the list would substitute bodyText back); the
   // common fits-on-one-line case takes the renderer's fast path anyway.
-  props.labelText = screen.theme().smallText;
+  props.labelText = screen.theme().bodyText;
   props.labelText.maxLines = 2;
   syncTabListViewport(screen, props);
   screen.list(props);

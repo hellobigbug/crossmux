@@ -31,20 +31,18 @@ struct HomeMenuEntry {
 };
 
 constexpr HomeMenuEntry kDefaultMenuOrder[] = {
-    {HomeMenuItem::FILE_BROWSER, StrId::STR_BROWSE_FILES, Folder},
     {HomeMenuItem::RECENTS, StrId::STR_MENU_RECENT_BOOKS, Recent},
-    {HomeMenuItem::OPDS_BROWSER, StrId::STR_OPDS_BROWSER, Library},
+    {HomeMenuItem::FILE_BROWSER, StrId::STR_BROWSE_FILES, Folder},
     {HomeMenuItem::FILE_TRANSFER, StrId::STR_FILE_TRANSFER, Transfer},
-    {HomeMenuItem::SETTINGS_MENU, StrId::STR_SETTINGS_TITLE, Settings},
-    {HomeMenuItem::APPS, StrId::STR_APPS_TITLE, Apps},
 #ifdef ENABLE_CHINESE_VERSION
     {HomeMenuItem::WEREAD, StrId::STR_WEREAD_TITLE, UIIcon::WeRead},
 #endif
+    {HomeMenuItem::APPS, StrId::STR_APPS_TITLE, Apps},
+    {HomeMenuItem::SETTINGS_MENU, StrId::STR_SETTINGS_TITLE, Settings},
 };
 constexpr HomeMenuEntry kCarouselMenuOrder[] = {
     {HomeMenuItem::FILE_BROWSER, StrId::STR_BROWSE_FILES, Folder},
     {HomeMenuItem::RECENTS, StrId::STR_MENU_RECENT_BOOKS, Recent},
-    {HomeMenuItem::OPDS_BROWSER, StrId::STR_OPDS_BROWSER, Library},
     {HomeMenuItem::APPS, StrId::STR_APPS_TITLE, Apps},
     {HomeMenuItem::FILE_TRANSFER, StrId::STR_FILE_TRANSFER, Transfer},
     {HomeMenuItem::SETTINGS_MENU, StrId::STR_SETTINGS_TITLE, Settings},
@@ -53,14 +51,14 @@ constexpr HomeMenuEntry kCarouselMenuOrder[] = {
 #endif
 };
 #ifdef ENABLE_CHINESE_VERSION
-constexpr int kHomeMenuItemCount = 7;
-#else
 constexpr int kHomeMenuItemCount = 6;
+#else
+constexpr int kHomeMenuItemCount = 5;
 #endif
 
 constexpr const HomeMenuEntry* menuEntryAtIndex(int index, bool hasOpds, bool carousel) {
+  (void)hasOpds;
   if (index < 0) return nullptr;
-  if (!hasOpds && index >= 2) ++index;
   if (index >= kHomeMenuItemCount) return nullptr;
   return &(carousel ? kCarouselMenuOrder : kDefaultMenuOrder)[index];
 }
@@ -71,21 +69,27 @@ constexpr HomeMenuItem indexToMenuItem(int index, bool hasOpds, bool carousel) {
 }
 
 constexpr int menuItemToIndex(HomeMenuItem item, bool hasOpds, bool carousel) {
-  const int count = hasOpds ? kHomeMenuItemCount : kHomeMenuItemCount - 1;
+  (void)hasOpds;
+  const int count = kHomeMenuItemCount;
   for (int i = 0; i < count; ++i) {
     if (indexToMenuItem(i, hasOpds, carousel) == item) return i;
   }
   return 0;
 }
 
-static_assert(indexToMenuItem(2, false, true) == HomeMenuItem::APPS);
-static_assert(indexToMenuItem(4, false, true) == HomeMenuItem::SETTINGS_MENU);
-static_assert(indexToMenuItem(3, true, true) == HomeMenuItem::APPS);
-static_assert(indexToMenuItem(5, true, true) == HomeMenuItem::SETTINGS_MENU);
-static_assert(indexToMenuItem(2, false, false) == HomeMenuItem::FILE_TRANSFER);
-static_assert(indexToMenuItem(4, false, false) == HomeMenuItem::APPS);
-static_assert(menuItemToIndex(HomeMenuItem::APPS, false, true) == 2);
-static_assert(menuItemToIndex(HomeMenuItem::SETTINGS_MENU, true, true) == 5);
+static_assert(indexToMenuItem(2, true, true) == HomeMenuItem::APPS);
+static_assert(indexToMenuItem(4, true, true) == HomeMenuItem::SETTINGS_MENU);
+static_assert(indexToMenuItem(2, true, false) == HomeMenuItem::FILE_TRANSFER);
+#ifdef ENABLE_CHINESE_VERSION
+static_assert(indexToMenuItem(4, true, false) == HomeMenuItem::APPS);
+#else
+static_assert(indexToMenuItem(3, true, false) == HomeMenuItem::APPS);
+#endif
+static_assert(menuItemToIndex(HomeMenuItem::APPS, true, true) == 2);
+static_assert(menuItemToIndex(HomeMenuItem::SETTINGS_MENU, true, true) == 4);
+#ifdef ENABLE_CHINESE_VERSION
+static_assert(menuItemToIndex(HomeMenuItem::WEREAD, true, true) == 5);
+#endif
 
 // Move a selection inside a row-major home grid, wrapping at the grid edges.
 // A wrap target past the end of a short row clamps to the last item.
@@ -107,9 +111,9 @@ int HomeActivity::getMenuItemCount() const {
   if (usesGridHome()) {
     // Grid homes keep books out of the menu entirely: covers live in the
     // stacked cascade band above the grid.
-    return hasOpdsServers ? kHomeMenuItemCount : kHomeMenuItemCount - 1;
+    return kHomeMenuItemCount;
   }
-  int count = 5;  // File Browser, Recents, File transfer, Settings, Apps
+  int count = kHomeMenuItemCount;
   if (metrics.homeContinueReadingInMenu) {
     // Continue-reading is a single row in the menu, however many covers the
     // bookshelf module shows.
@@ -117,7 +121,6 @@ int HomeActivity::getMenuItemCount() const {
   } else {
     count += static_cast<int>(recentBooks.size());
   }
-  if (hasOpdsServers) ++count;
   return count;
 }
 
@@ -498,21 +501,23 @@ void HomeActivity::loop() {
         break;
     }
   } else if (gridHome) {
-    // Swipes follow the visual flow: Up/Right advance the grid selection.
+    // Horizontal swipes are global navigation on the grid home:
+    // Left → Library (recent books), Right → Reading Stats.
+   if (swipe == MappedInputManager::SwipeDir::Left) {
+      activityManager.goToRecentBooks();
+      return;
+   }
+    if (swipe == MappedInputManager::SwipeDir::Right) {
+      activityManager.goToReadingStats();
+      return;
+    }
+    // Vertical swipes still walk the dock grid.
     if (swipe == MappedInputManager::SwipeDir::Up) {
       moveGridSelection(0, +1);
       return;
     }
     if (swipe == MappedInputManager::SwipeDir::Down) {
       moveGridSelection(0, -1);
-      return;
-    }
-    if (swipe == MappedInputManager::SwipeDir::Right) {
-      moveGridSelection(+1, 0);
-      return;
-    }
-    if (swipe == MappedInputManager::SwipeDir::Left) {
-      moveGridSelection(-1, 0);
       return;
     }
   } else {
@@ -564,7 +569,7 @@ void HomeActivity::loop() {
   if (gridHome) {
     // Stacked cover cascade: same geometry the theme draws, so taps land on
     // the exact cover the user sees (newest on top, older ones below/right).
-    const int coverMenuCount = hasOpdsServers ? kHomeMenuItemCount : kHomeMenuItemCount - 1;
+    const int coverMenuCount = kHomeMenuItemCount;
     const int coverModuleHeight = GUI.getHomeModuleHeight(renderer, coverMenuCount);
     const Rect coverStackRect{0, metrics.homeTopPadding, renderer.getScreenWidth(), coverModuleHeight};
     const HomeCoverStackLayout coverStack =
@@ -667,7 +672,7 @@ void HomeActivity::render(RenderLock&&) {
       static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
   const bool gridHome = usesGridHome();
 
-  const int homeMenuItemCount = hasOpdsServers ? kHomeMenuItemCount : kHomeMenuItemCount - 1;
+  const int homeMenuItemCount = kHomeMenuItemCount;
   const bool showContinueReading = metrics.homeContinueReadingInMenu && !recentBooks.empty() && !gridHome;
   std::vector<const char*> menuItems;
   std::vector<UIIcon> menuIcons;
@@ -743,7 +748,7 @@ void HomeActivity::render(RenderLock&&) {
 
   drawMenu();
 
-  if (!isCarousel) {
+  if (!isCarousel && !gridHome) {
     const auto labels = mappedInput.mapLabels(SETTINGS.standbyShortcutEnabled ? tr(STR_STANDBY_TITLE) : "",
                                               tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

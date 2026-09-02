@@ -54,29 +54,39 @@ struct HomeGridLayout {
   }
 };
 
-// Cascade of stacked book covers on the home screen. Cover 0 is the most
-// recent book and sits on top; older covers slide down/right behind it. The
-// same layout drives drawing and touch hit-testing so taps always land on the
-// cover the user sees.
+// Home cover row: the most recent book is the large center card, older books
+// sit smaller on the left and right. The same layout drives drawing and touch
+// hit-testing so taps always land on the cover the user sees.
 struct HomeCoverStackLayout {
-  int x = 0;
-  int y = 0;
+  int x = 0;  // left edge of the center (most recent) cover
+  int y = 0;  // top edge of the center cover
   int width = 0;
   int height = 0;
-  int stepX = 0;
-  int stepY = 0;
+  int sideWidth = 0;
+  int sideHeight = 0;
+  int gap = 0;
   int count = 0;
 
-  bool isValid() const { return count > 0 && width > 0 && height > 0; }
+  bool isValid() const {
+    if (count <= 0 || width <= 0 || height <= 0) return false;
+    return count == 1 || (sideWidth > 0 && sideHeight > 0);
+  }
+
+  Rect rectFor(const int index) const {
+    if (index == 0) return Rect{x, y, width, height};
+    const bool left = index == 1;
+    const int sideX = left ? x - sideWidth - gap : x + width + gap;
+    const int sideY = y + (height - sideHeight) / 2;
+    return Rect{sideX, sideY, sideWidth, sideHeight};
+  }
 
   // Newest-first scan: the first cover whose painted rect contains the point
-  // wins, which matches the visual stacking order.
+  // wins, matching the visual order.
   int indexAt(int px, int py) const {
     if (!isValid()) return -1;
     for (int i = 0; i < count; ++i) {
-      const int rx = x + i * stepX;
-      const int ry = y + i * stepY;
-      if (px >= rx && px < rx + width && py >= ry && py < ry + height) return i;
+      const Rect r = rectFor(i);
+      if (px >= r.x && px < r.x + r.width && py >= r.y && py < r.y + r.height) return i;
     }
     return -1;
   }

@@ -299,6 +299,7 @@ bool AppsMenuActivity::handleCustomInput() {
     requestUpdate();
     return true;
   }
+  // Left/right swipe: fall through to base class (Back/home navigation).
   return false;
 }
 

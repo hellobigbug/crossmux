@@ -21,9 +21,9 @@ inline UIScaleSpec uiScaleSpec() {
   // the home grid instead of the tiny 10px default. CJK builds keep UI_12 (the
   // largest inline CJK face); other builds use Noto Sans 16 like the home.
 #ifdef ENABLE_CHINESE_VERSION
-  constexpr int kLargeBodyFont = UI_12_FONT_ID;
-  constexpr int kLargeTitleFont = UI_12_FONT_ID;
-  constexpr int kLargeSmallFont = UI_10_FONT_ID;
+constexpr int kLargeBodyFont = UI_12_FONT_ID;
+constexpr int kLargeTitleFont = UI_12_FONT_ID;
+constexpr int kLargeSmallFont = UI_12_FONT_ID;
 #else
   constexpr int kLargeBodyFont = NOTOSANS_16_FONT_ID;
   constexpr int kLargeTitleFont = NOTOSANS_16_FONT_ID;
