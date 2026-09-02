@@ -9,6 +9,7 @@
 #include "CrossPointSettings.h"
 #include "activities/UiTabListActivity.h"
 #include "components/OptionPopup.h"
+#include "components/themes/BaseTheme.h"
 
 enum class SettingType { TOGGLE, ENUM, ACTION, VALUE, STRING };
 
@@ -211,6 +212,15 @@ class SettingsActivity final : public UiTabListActivity {
   void rebuildRowItems();
   void rebuildAccordionRows();
 
+  // Nokia grid layout: settings render as a smaller 3-column soft-key grid
+  // instead of the FreeInkUI list. Geometry and input live here so drawing
+  // and hit-testing stay in one place.
+  bool usesGridLayout() const;
+  HomeGridLayout settingsGridLayout() const;
+  void drawSettingsGrid(UiScreen& screen);
+  void activateGridSetting();
+  int gridSelected_ = 0;
+
   static constexpr int categoryCount = 4;
   static const StrId categoryNames[categoryCount];
 
@@ -218,7 +228,7 @@ class SettingsActivity final : public UiTabListActivity {
   int listCount() const override;
   int tabCount() const override { return categoryCount; }
   int activeTab() const override { return selectedCategoryIndex; }
-  const char* tabLabel(int index) const override { return I18N.get(categoryNames[index]); }
+  const char* tabLabel(int index) const override;
   void buildScreen(UiScreen& screen) override;
   void activateIndex(int index) override;
   freeink::ui::ListNav& activeNav() override;

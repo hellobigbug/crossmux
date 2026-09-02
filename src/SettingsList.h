@@ -204,6 +204,15 @@ inline const std::vector<SettingInfo>& getBaseSettingsList() {
     statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_RIGHT] = StrId::STR_DIR_RIGHT;
     statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_LEFT] = StrId::STR_DIR_LEFT;
 
+    std::vector<StrId> uiThemeValues(static_cast<size_t>(CrossPointSettings::UI_THEME::NOKIA) + 1);
+    uiThemeValues[CrossPointSettings::UI_THEME::CLASSIC] = StrId::STR_THEME_CLASSIC;
+    uiThemeValues[CrossPointSettings::UI_THEME::LYRA] = StrId::STR_THEME_LYRA;
+    uiThemeValues[CrossPointSettings::UI_THEME::LYRA_3_COVERS] = StrId::STR_THEME_LYRA_EXTENDED;
+    uiThemeValues[CrossPointSettings::UI_THEME::ROUNDEDRAFF] = StrId::STR_THEME_ROUNDEDRAFF;
+    uiThemeValues[CrossPointSettings::UI_THEME::LYRA_CAROUSEL] = StrId::STR_THEME_LYRA_CAROUSEL;
+    uiThemeValues[CrossPointSettings::UI_THEME::INX] = StrId::STR_THEME_INX;
+    uiThemeValues[CrossPointSettings::UI_THEME::NOKIA] = StrId::STR_THEME_NOKIA;
+
     std::vector<SettingInfo> v = {
         // --- Display ---
         SettingInfo::Enum(StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen, std::move(sleepScreenValues),
@@ -226,9 +235,7 @@ inline const std::vector<SettingInfo>& getBaseSettingsList() {
                            StrId::STR_PAGES_30, StrId::STR_NEVER},
                           "refreshFrequency", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_UI_THEME, &CrossPointSettings::uiTheme,
-                          {StrId::STR_THEME_NOKIA, StrId::STR_THEME_CLASSIC, StrId::STR_THEME_LYRA,
-                           StrId::STR_THEME_LYRA_EXTENDED, StrId::STR_THEME_ROUNDEDRAFF,
-                           StrId::STR_THEME_LYRA_CAROUSEL, StrId::STR_THEME_INX},
+                          std::move(uiThemeValues),
                           "uiTheme", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_INX_RECENT_LAYOUT, &CrossPointSettings::inxRecentLayout,
                           {StrId::STR_LAYOUT_FLOW, StrId::STR_LAYOUT_GRID, StrId::STR_LAYOUT_LIST,

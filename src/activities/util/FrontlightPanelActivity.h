@@ -9,7 +9,7 @@
 // or a button bound to "Control Center" (iOS Control Center style): a grabber,
 // the frontlight brightness/warmth sliders (on boards with a light), and a grid
 // of quick-setting tiles — night mode, ghost-cleanup refresh, reading
-// orientation, and reader touch controls on/off. The
+// orientation, and UI anti-aliasing on/off. The
 // frontlight controls are always there: they are what the panel is for. Pure
 // 1-bit: no dithered fills, selection reads as a filled tile. The grabber sits
 // along the panel's bottom edge, the edge the sheet is dragged from.
@@ -29,14 +29,12 @@ class FrontlightPanelActivity final : public Activity, private UiAppHost {
   // reflected user intent in the first place.
   bool lightOnChanged = false;
   bool draggingSlider = false;
-  // The touch tile toggles SETTINGS.touchReaderControls between off and this
-  // remembered mode, so a Swipe or Inverted Tap user gets their mode back
-  // rather than the Tap default. Seeded from the setting in onEnter().
-  uint8_t touchModeRestore = CrossPointSettings::TOUCH_READER_ON;
   int panelBottom = 0;
 
   // Quick-setting tiles, in grid order (2 columns): night mode, refresh,
-  // orientation, touch. Fixed set — shown on touch boards, absent elsewhere.
+  // orientation, anti-aliasing. Fixed set — shown on touch boards, absent
+  // elsewhere. There is deliberately no touch on/off tile: this device is
+  // fully touch-driven and disabling touch would brick it.
   static constexpr int kTileCount = 4;
 
   // fui::SliderRowProps and fui::TileGridProps embed a 324-byte fui::StyleSet,

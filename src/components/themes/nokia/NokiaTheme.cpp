@@ -1,12 +1,32 @@
 #include "NokiaTheme.h"
 
+#include <Bitmap.h>
 #include <GfxRenderer.h>
+#include <HalStorage.h>
+#include <I18n.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdint>
 #include <string>
 
 #include "CrossPointSettings.h"
+#include "RecentBooksStore.h"
+#include "components/icons/apps.h"
+#include "components/icons/book.h"
+#include "components/icons/bookmark.h"
+#include "components/icons/folder.h"
+#include "components/icons/hotspot.h"
+#include "components/icons/library.h"
+#include "components/icons/recent.h"
+#include "components/icons/settings2.h"
+#include "components/icons/transfer.h"
+#include "components/icons/wifi.h"
+#include "components/icons/weread.h"
+#include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/HeaderDateUtils.h"
+#include "util/TimeUtils.h"
 
 namespace {
 
@@ -16,18 +36,23 @@ namespace {
 // font, and rendering tofu in the default theme would be a regression).
 #ifdef ENABLE_CHINESE_VERSION
 constexpr int kTitleFontId = UI_12_FONT_ID;
+constexpr int kHeaderTitleFontId = UI_12_FONT_ID;  // largest inline CJK face
 constexpr int kGuideFontId = UI_10_FONT_ID;
+constexpr int kAuxFontId = UI_10_FONT_ID;
 #else
 constexpr int kTitleFontId = NOTOSANS_16_FONT_ID;
+constexpr int kHeaderTitleFontId = NOTOSANS_18_FONT_ID;
 constexpr int kGuideFontId = NOTOSANS_14_FONT_ID;
+constexpr int kAuxFontId = NOTOSANS_12_FONT_ID;
 #endif
 
 // Bottom-to-top clearance inside each soft-key / list row so the glyphs sit
 // nicely centered with plenty of white space (the "big target" feel).
 constexpr int kTapPaddingY = 24;
-// Rounded corner radius for the Nokia soft-key buttons.
-constexpr int kKeyRadius = 30;
-constexpr int kRowRadius = 24;
+// Uniform button/tile corner radius, aligned with the screen's rounded-corner
+// look; every interactive tile and tab uses the same value.
+constexpr int kKeyRadius = 26;
+constexpr int kRowRadius = 20;
 
 void drawNokiaScrollBar(const GfxRenderer& renderer, Rect rect, int itemCount, int pageStartIndex, int pageItems) {
   if (itemCount <= 0 || pageItems <= 0 || itemCount <= pageItems) {
@@ -44,22 +69,115 @@ void drawNokiaScrollBar(const GfxRenderer& renderer, Rect rect, int itemCount, i
   renderer.fillRect(barX, thumbY, barW, thumbH);
 }
 
+// 32px icon bitmaps (1bpp, MSB-first, bit==0 = ink) drawn at `scale` px per
+// source pixel. Mirrors GfxRenderer::drawIcon's orientation mapping so the
+// Lyra icon set renders exactly as it does in LyraTheme.
+void drawNokiaIcon(const GfxRenderer& renderer, const uint8_t* bitmap, int x, int y, int scale, bool inverted) {
+  constexpr int kIconSize = 32;
+  constexpr int kRowBytes = kIconSize / 8;
+  for (int row = 0; row < kIconSize; ++row) {
+    for (int col = 0; col < kIconSize; ++col) {
+      const uint8_t byte = bitmap[row * kRowBytes + (col >> 3)];
+      if (((byte >> (7 - (col & 7))) & 1U) != 0) continue;
+      renderer.fillRect(x + (kIconSize - 1 - row) * scale, y + col * scale, scale, scale, !inverted);
+    }
+  }
+}
+
+const uint8_t* nokiaHomeIcon(const UIIcon icon) {
+  switch (icon) {
+    case UIIcon::Book:
+      return BookIcon;
+    case UIIcon::Folder:
+      return FolderIcon;
+    case UIIcon::Recent:
+      return RecentIcon;
+    case UIIcon::Library:
+    case UIIcon::Opds:
+      return LibraryIcon;
+    case UIIcon::Transfer:
+    case UIIcon::Usb:
+      return TransferIcon;
+    case UIIcon::Settings:
+      return Settings2Icon;
+    case UIIcon::Apps:
+      return AppsIcon;
+    case UIIcon::WeRead:
+      return WeReadIcon;
+    case UIIcon::Bookmark:
+      return BookmarkIcon;
+    case UIIcon::Wifi:
+      return WifiIcon;
+    case UIIcon::Hotspot:
+      return HotspotIcon;
+    default:
+      return nullptr;
+  }
+}
+
 }  // namespace
 
 void NokiaTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* title,
                             const char* subtitle) const {
   (void)subtitle;
-  // Home screen header is custom-rendered in drawRecentBookCover (inherited).
-  if (title == nullptr) {
-    return;
-  }
   const int sidePadding = NokiaMetrics::values.contentSidePadding;
-  const int titleX = rect.x + sidePadding;
-  const int titleY = rect.y + 16;
-
   const bool showBatteryPercentage =
       SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
-  const int batteryIconX = rect.x + rect.width - sidePadding - NokiaMetrics::values.batteryWidth;
+  // Battery keeps a clear safety margin from the physical screen edge.
+  const int edgeMargin = 28;
+  const int batteryIconX = rect.x + rect.width - edgeMargin - NokiaMetrics::values.batteryWidth;
+
+  if (title == nullptr) {
+    // Nokia home status line: date left, current time center, battery right.
+    const std::string dateText = HeaderDateUtils::getDisplayDateText();
+    if (!dateText.empty()) {
+      renderer.drawText(kAuxFontId, rect.x + edgeMargin, rect.y + (rect.height - renderer.getLineHeight(kAuxFontId)) / 2,
+                        dateText.c_str(), true, EpdFontFamily::REGULAR);
+    }
+    char timeBuf[16];
+    if (TimeUtils::formatCurrentTime(timeBuf, sizeof(timeBuf), SETTINGS.clockFormat == 1)) {
+      const int timeW = renderer.getTextWidth(kTitleFontId, timeBuf, EpdFontFamily::BOLD);
+      const int timeX = rect.x + (rect.width - timeW) / 2;
+      const int timeY = rect.y + std::max(0, (rect.height - renderer.getLineHeight(kTitleFontId)) / 2);
+      renderer.drawText(kTitleFontId, timeX, timeY, timeBuf, true, EpdFontFamily::BOLD);
+    }
+    const int batteryY = rect.y + std::max(4, (rect.height - NokiaMetrics::values.batteryHeight) / 2);
+    drawBatteryRight(renderer,
+                     Rect{batteryIconX, batteryY, NokiaMetrics::values.batteryWidth,
+                          NokiaMetrics::values.batteryHeight},
+                     showBatteryPercentage);
+    return;
+  }
+
+  // Visible back soft-key on every non-home screen. Tapping the header band
+  // already maps to Back on touch boards (wasHeaderTapBack); drawing the
+  // button makes the affordance explicit for users without edge-swipe back.
+  const std::string backLabel = tr(STR_BACK);
+  const int backLabelW = renderer.getTextWidth(kTitleFontId, backLabel.c_str(), EpdFontFamily::BOLD);
+  constexpr int kArrowSpan = 18;  // drawn left-arrow width
+  constexpr int kArrowTextGap = 8;
+  constexpr int kBackButtonSidePad = 18;
+  const int backBtnW = kArrowSpan + kArrowTextGap + backLabelW + kBackButtonSidePad * 2;
+  const int backBtnH = std::min(std::max(40, rect.height - 8), 50);
+  const int backBtnX = rect.x + sidePadding;
+  const int backBtnY = rect.y + (rect.height - backBtnH) / 2;
+  renderer.fillRoundedRect(backBtnX, backBtnY, backBtnW, backBtnH, kKeyRadius, Color::White);
+  renderer.drawRoundedRect(backBtnX, backBtnY, backBtnW, backBtnH, 2, kKeyRadius, true);
+  // Crisp drawn left arrow (the subset CJK fonts lack U+2190), bigger than text.
+  const int blockW = kArrowSpan + kArrowTextGap + backLabelW;
+  const int blockLeft = backBtnX + (backBtnW - blockW) / 2;
+  const int arrowCX = blockLeft + kArrowSpan / 2;
+  const int arrowCY = backBtnY + backBtnH / 2;
+  const int arrowArm = 10;
+  renderer.drawLine(arrowCX + arrowArm, arrowCY, arrowCX - arrowArm, arrowCY, 3, true);
+  renderer.drawLine(arrowCX - arrowArm, arrowCY, arrowCX - arrowArm + 7, arrowCY - 7, 3, true);
+  renderer.drawLine(arrowCX - arrowArm, arrowCY, arrowCX - arrowArm + 7, arrowCY + 7, 3, true);
+  const int backTextX = blockLeft + kArrowSpan + kArrowTextGap;
+  const int backTextY = backBtnY + (backBtnH - renderer.getLineHeight(kTitleFontId)) / 2;
+  renderer.drawText(kTitleFontId, backTextX, backTextY, backLabel.c_str(), true, EpdFontFamily::BOLD);
+
+  const int titleX = backBtnX + backBtnW + 12;
+  const int titleY = rect.y + (rect.height - renderer.getLineHeight(kHeaderTitleFontId)) / 2;
 
   int batteryGroupLeftX = batteryIconX;
   if (showBatteryPercentage) {
@@ -72,9 +190,9 @@ void NokiaTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* 
     batteryGroupLeftX = batteryIconX - maxTextWidth - batteryPercentSpacing;
   }
 
-  const int maxTitleWidth = std::max(0, batteryGroupLeftX - 20 - titleX);
-  auto headerTitle = renderer.truncatedText(kTitleFontId, title, maxTitleWidth, EpdFontFamily::BOLD);
-  renderer.drawText(kTitleFontId, titleX, titleY, headerTitle.c_str(), true, EpdFontFamily::BOLD);
+  const int maxTitleWidth = std::max(0, batteryGroupLeftX - 14 - titleX);
+  auto headerTitle = renderer.truncatedText(kHeaderTitleFontId, title, maxTitleWidth, EpdFontFamily::BOLD);
+  renderer.drawText(kHeaderTitleFontId, titleX, titleY, headerTitle.c_str(), true, EpdFontFamily::BOLD);
   drawBatteryRight(renderer,
                    Rect{batteryIconX, rect.y + 14, NokiaMetrics::values.batteryWidth,
                         NokiaMetrics::values.batteryHeight},
@@ -118,6 +236,181 @@ void NokiaTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCoun
   }
 
   drawNokiaScrollBar(renderer, rect, buttonCount, pageStartIndex, pageItems);
+}
+
+HomeGridLayout NokiaTheme::getHomeGridLayout(const GfxRenderer& renderer, int itemCount) const {
+  HomeGridLayout layout;
+  if (itemCount <= 0) return layout;
+
+  constexpr int kColumns = 3;
+  constexpr int kGap = 10;
+  constexpr int kSidePadding = 20;
+  constexpr int kTopOffset = 14;
+
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  // The grid sits below the bookshelf/clock module. The module height is
+  // derived from the square grid so the two always add up to the same band.
+  const int gridTop = NokiaMetrics::values.homeTopPadding + getHomeModuleHeight(renderer, itemCount) + kTopOffset;
+  const int gridBottom = pageHeight - NokiaMetrics::values.buttonHintsHeight - 12;
+  if (gridBottom <= gridTop) return layout;
+
+  const int gridWidth = pageWidth - kSidePadding * 2;
+  const int cellWidth = (gridWidth - (kColumns - 1) * kGap) / kColumns;
+  if (cellWidth <= 0) return layout;
+
+  const int rows = (itemCount + kColumns - 1) / kColumns;
+  const int availableHeight = gridBottom - gridTop;
+  // Tiles keep the width of a column but their height adapts to the room left
+  // below the cover band, so three rows of menu items never run off-screen.
+  const int cellHeight = std::clamp((availableHeight - (rows - 1) * kGap) / rows, 64, cellWidth);
+  if (cellHeight <= 0) return layout;
+
+  const int gridHeight = rows * cellHeight + (rows - 1) * kGap;
+  layout.columns = kColumns;
+  layout.rows = rows;
+  layout.cellX = (pageWidth - gridWidth) / 2;
+  layout.cellY = gridTop + std::max(0, (availableHeight - gridHeight) / 2);
+  layout.cellWidth = cellWidth;
+  layout.cellHeight = cellHeight;
+  layout.gap = kGap;
+  return layout;
+}
+
+int NokiaTheme::getHomeModuleHeight(const GfxRenderer& renderer, int itemCount) const {
+  (void)renderer;
+  (void)itemCount;
+  // Fixed cover band: three side-by-side covers plus their titles. The grid
+  // below adapts to whatever vertical space remains.
+  return 170;
+}
+
+void NokiaTheme::drawHomeMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
+                              const std::function<std::string(int index)>& buttonLabel,
+                              const std::function<UIIcon(int index)>& rowIcon) const {
+  const HomeGridLayout layout = getHomeGridLayout(renderer, buttonCount);
+  if (!layout.isGrid()) {
+    // Fallback for degenerate screens: keep the soft-key list look.
+    drawButtonMenu(renderer, rect, buttonCount, selectedIndex, buttonLabel, rowIcon);
+    return;
+  }
+
+  const int lineHeight = renderer.getLineHeight(kTitleFontId);
+  // Tall tiles get the 2x icon; short (3-row) grids drop to 1x so the icon
+  // and label still fit inside the tile.
+  const bool largeIcon = layout.cellHeight >= 100;
+  const int kIconSize = largeIcon ? 64 : 32;
+  const int kIconScale = largeIcon ? 2 : 1;
+  constexpr int kLabelGap = 6;
+
+  for (int i = 0; i < buttonCount; ++i) {
+    const int col = i % layout.columns;
+    const int row = i / layout.columns;
+    const int x = layout.cellX + col * (layout.cellWidth + layout.gap);
+    const int y = layout.cellY + row * (layout.cellHeight + layout.gap);
+    const bool isSelected = selectedIndex == i;
+
+    // Big rounded soft-key tile. Selected modules invert: black fill with
+    // white glyph/label for an unmistakable focus state.
+    renderer.fillRoundedRect(x, y, layout.cellWidth, layout.cellHeight, kKeyRadius,
+                             isSelected ? Color::Black : Color::White);
+    if (!isSelected) renderer.drawRoundedRect(x, y, layout.cellWidth, layout.cellHeight, 1, kKeyRadius, true);
+
+    const uint8_t* iconBitmap = nokiaHomeIcon(rowIcon(i));
+    if (iconBitmap != nullptr) {
+      const int iconX = x + (layout.cellWidth - kIconSize) / 2;
+      const int blockHeight = kIconSize + kLabelGap + lineHeight;
+      const int iconY = y + std::max(6, (layout.cellHeight - blockHeight) / 2);
+      drawNokiaIcon(renderer, iconBitmap, iconX, iconY, kIconScale, isSelected);
+      const std::string label =
+          renderer.truncatedText(kTitleFontId, buttonLabel(i).c_str(), std::max(1, layout.cellWidth - 12),
+                                 EpdFontFamily::BOLD);
+      const int labelW = renderer.getTextWidth(kTitleFontId, label.c_str(), EpdFontFamily::BOLD);
+      renderer.drawText(kTitleFontId, x + (layout.cellWidth - labelW) / 2, iconY + kIconSize + kLabelGap,
+                        label.c_str(), !isSelected, EpdFontFamily::BOLD);
+    } else {
+      // No icon: center the label vertically in the tile.
+      const std::string label =
+          renderer.truncatedText(kTitleFontId, buttonLabel(i).c_str(), std::max(1, layout.cellWidth - 12),
+                                 EpdFontFamily::BOLD);
+      const int labelW = renderer.getTextWidth(kTitleFontId, label.c_str(), EpdFontFamily::BOLD);
+      renderer.drawText(kTitleFontId, x + (layout.cellWidth - labelW) / 2,
+                        y + (layout.cellHeight - lineHeight) / 2, label.c_str(), !isSelected,
+                        EpdFontFamily::BOLD);
+    }
+  }
+}
+
+void NokiaTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
+                                     int selectorIndex, bool& coverRendered, bool& coverBufferStored,
+                                     bool& bufferRestored, std::function<bool()> storeCoverBuffer) const {
+  (void)selectorIndex;
+  // Keep the snapshot flags false: the module redraws from SD on every full
+  // frame, so there is no cover buffer to restore.
+  coverRendered = false;
+  coverBufferStored = false;
+  bufferRestored = false;
+  (void)storeCoverBuffer;
+
+  const HomeCoverStackLayout layout = getHomeCoverStackLayout(renderer, rect, static_cast<int>(recentBooks.size()));
+  if (!layout.isValid()) return;
+
+  // One rounded card hosts the whole side-by-side row.
+  renderer.fillRoundedRect(rect.x + 20, rect.y + 6, rect.width - 40, rect.height - 12, 24, Color::White);
+  renderer.drawRoundedRect(rect.x + 20, rect.y + 6, rect.width - 40, rect.height - 12, 1, 24, true);
+
+  const int titleLine = renderer.getLineHeight(kAuxFontId);
+  for (int i = 0; i < layout.count; ++i) {
+    const RecentBook& book = recentBooks[i];
+    const int cx = layout.x + i * layout.stepX;
+    const int cy = layout.y;
+    bool drewCover = false;
+    if (!book.coverBmpPath.empty()) {
+      const std::string coverBmpPath =
+          UITheme::getCoverThumbPath(book.coverBmpPath, NokiaMetrics::values.homeCoverHeight);
+      HalFile file;
+      if (Storage.openFileForRead("HOME", coverBmpPath, file)) {
+        Bitmap bitmap(file);
+        if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+          renderer.drawBitmap(bitmap, cx, cy, layout.width, layout.height);
+          drewCover = true;
+        }
+      }
+    }
+    if (!drewCover) {
+      renderer.fillRoundedRect(cx, cy, layout.width, layout.height, 12, Color::White);
+    }
+    renderer.drawRect(cx, cy, layout.width, layout.height);
+
+    // Book title under the cover, truncated to the cover width.
+    const std::string title =
+        renderer.truncatedText(kAuxFontId, book.title.c_str(), layout.width, EpdFontFamily::REGULAR);
+    renderer.drawText(kAuxFontId, cx + (layout.width - renderer.getTextWidth(kAuxFontId, title.c_str())) / 2,
+                      cy + layout.height + 2, title.c_str(), true, EpdFontFamily::REGULAR);
+  }
+}
+
+HomeCoverStackLayout NokiaTheme::getHomeCoverStackLayout(const GfxRenderer& renderer, Rect rect,
+                                                          int coverCount) const {
+  HomeCoverStackLayout layout;
+  if (coverCount <= 0 || rect.width <= 0 || rect.height <= 0) return layout;
+
+  constexpr int kMaxCount = 3;
+  constexpr int kGap = 14;
+  const int count = std::min(coverCount, kMaxCount);
+  const int titleLine = renderer.getLineHeight(kAuxFontId);
+  // 3:4 covers, sized to the band minus the title strip below.
+  const int coverH = std::max(64, rect.height - 22 - titleLine);
+  const int coverW = std::clamp((coverH * 3 + 2) / 4, 56, 108);
+  const int totalWidth = count * coverW + (count - 1) * kGap;
+  layout.x = rect.x + std::max(0, (rect.width - totalWidth) / 2);
+  layout.y = rect.y + 8;
+  layout.width = coverW;
+  layout.height = coverH;
+  layout.stepX = coverW + kGap;
+  layout.stepY = 0;
+  layout.count = count;
+  return layout;
 }
 
 int NokiaTheme::getListRowStep(bool hasSubtitle) const {
@@ -226,7 +519,7 @@ void NokiaTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const 
   const int pageHeight = renderer.getScreenHeight();
   const int sidePadding = NokiaMetrics::values.contentSidePadding;
   const int groupGap = 12;
-  const int bottomMargin = 12;
+  const int bottomMargin = 20;
   const int hintHeight = NokiaMetrics::values.buttonHintsHeight - 12;
   const int groupWidth = (pageWidth - sidePadding * 2 - groupGap) / 2;
   const int hintY = pageHeight - hintHeight - bottomMargin;

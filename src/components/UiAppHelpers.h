@@ -102,6 +102,50 @@ inline freeink::ui::BitmapRef listIconFor(const UIIcon icon, const int size = 24
         return freeink::ui::bitmapFromIcon(icon_usb_32);
       case UIIcon::Bookmark:
         return freeink::ui::bitmapFromIcon(icon_bookmark_32);
+      case UIIcon::Settings:
+        return freeink::ui::bitmapFromIcon(icon_settings_32);
+      case UIIcon::Recent:
+      case UIIcon::Clock:
+        return freeink::ui::bitmapFromIcon(icon_clock_32);
+      case UIIcon::Transfer:
+        return freeink::ui::bitmapFromIcon(icon_upload_32);
+      case UIIcon::Apps:
+        return freeink::ui::bitmapFromIcon(icon_list_32);
+      case UIIcon::Standby:
+      case UIIcon::Zap:
+        return freeink::ui::bitmapFromIcon(icon_zap_32);
+      case UIIcon::Moon:
+        return freeink::ui::bitmapFromIcon(icon_moon_32);
+      case UIIcon::Sun:
+        return freeink::ui::bitmapFromIcon(icon_sun_32);
+      case UIIcon::Battery:
+        return freeink::ui::bitmapFromIcon(icon_battery_32);
+      case UIIcon::Palette:
+        return freeink::ui::bitmapFromIcon(icon_palette_32);
+      case UIIcon::Type:
+        return freeink::ui::bitmapFromIcon(icon_type_32);
+      case UIIcon::Info:
+        return freeink::ui::bitmapFromIcon(icon_info_32);
+      case UIIcon::Globe:
+        return freeink::ui::bitmapFromIcon(icon_globe_32);
+      case UIIcon::Refresh:
+        return freeink::ui::bitmapFromIcon(icon_refresh_ccw_32);
+      case UIIcon::Monitor:
+        return freeink::ui::bitmapFromIcon(icon_monitor_32);
+      case UIIcon::List:
+        return freeink::ui::bitmapFromIcon(icon_list_32);
+      case UIIcon::Database:
+        return freeink::ui::bitmapFromIcon(icon_database_32);
+      case UIIcon::Shield:
+        return freeink::ui::bitmapFromIcon(icon_shield_32);
+      case UIIcon::Smartphone:
+        return freeink::ui::bitmapFromIcon(icon_smartphone_32);
+      case UIIcon::BookOpen:
+        return freeink::ui::bitmapFromIcon(icon_book_open_32);
+      case UIIcon::Upload:
+        return freeink::ui::bitmapFromIcon(icon_upload_32);
+      case UIIcon::Download:
+        return freeink::ui::bitmapFromIcon(icon_download_32);
       default:
         return {};
     }
@@ -127,6 +171,50 @@ inline freeink::ui::BitmapRef listIconFor(const UIIcon icon, const int size = 24
       return freeink::ui::bitmapFromIcon(icon_usb_24);
     case UIIcon::Bookmark:
       return freeink::ui::bitmapFromIcon(icon_bookmark_24);
+    case UIIcon::Settings:
+      return freeink::ui::bitmapFromIcon(icon_settings_24);
+    case UIIcon::Recent:
+    case UIIcon::Clock:
+      return freeink::ui::bitmapFromIcon(icon_clock_24);
+    case UIIcon::Transfer:
+      return freeink::ui::bitmapFromIcon(icon_upload_24);
+    case UIIcon::Apps:
+      return freeink::ui::bitmapFromIcon(icon_list_24);
+    case UIIcon::Standby:
+    case UIIcon::Zap:
+      return freeink::ui::bitmapFromIcon(icon_zap_24);
+    case UIIcon::Moon:
+      return freeink::ui::bitmapFromIcon(icon_moon_24);
+    case UIIcon::Sun:
+      return freeink::ui::bitmapFromIcon(icon_sun_24);
+    case UIIcon::Battery:
+      return freeink::ui::bitmapFromIcon(icon_battery_24);
+    case UIIcon::Palette:
+      return freeink::ui::bitmapFromIcon(icon_palette_24);
+    case UIIcon::Type:
+      return freeink::ui::bitmapFromIcon(icon_type_24);
+    case UIIcon::Info:
+      return freeink::ui::bitmapFromIcon(icon_info_24);
+    case UIIcon::Globe:
+      return freeink::ui::bitmapFromIcon(icon_globe_24);
+    case UIIcon::Refresh:
+      return freeink::ui::bitmapFromIcon(icon_refresh_ccw_24);
+    case UIIcon::Monitor:
+      return freeink::ui::bitmapFromIcon(icon_monitor_24);
+    case UIIcon::List:
+      return freeink::ui::bitmapFromIcon(icon_list_24);
+    case UIIcon::Database:
+      return freeink::ui::bitmapFromIcon(icon_database_24);
+    case UIIcon::Shield:
+      return freeink::ui::bitmapFromIcon(icon_shield_24);
+    case UIIcon::Smartphone:
+      return freeink::ui::bitmapFromIcon(icon_smartphone_24);
+    case UIIcon::BookOpen:
+      return freeink::ui::bitmapFromIcon(icon_book_open_24);
+    case UIIcon::Upload:
+      return freeink::ui::bitmapFromIcon(icon_upload_24);
+    case UIIcon::Download:
+      return freeink::ui::bitmapFromIcon(icon_download_24);
     default:
       return {};
   }

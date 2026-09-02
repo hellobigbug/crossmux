@@ -47,6 +47,9 @@ void WhatToEatActivity::pick() {
 }
 
 void WhatToEatActivity::loop() {
+  int tapX = 0;
+  int tapY = 0;
+  const bool tapped = mappedInput.wasScreenTapped(tapX, tapY);
   if (spinning_) {
     const unsigned long now = millis();
     if (now >= nextFrameMs_) {
@@ -72,7 +75,7 @@ void WhatToEatActivity::loop() {
     activityManager.goToApps();
     return;
   }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+  if (tapped || mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
       mappedInput.wasReleased(MappedInputManager::Button::Up) ||
       mappedInput.wasReleased(MappedInputManager::Button::Down)) {
     pick();

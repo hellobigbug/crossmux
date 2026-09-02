@@ -169,6 +169,10 @@ class OptionPopup {
     // itself never dispatches, so it gets an empty snapshot.
     const fui::InputSnapshot noInput{};
 
+    // Black dot-matrix scrim over the whole screen: blocks background
+    // interaction visually while the pure-white modal stays readable.
+    renderer.fillRectDither(0, 0, renderer.getScreenWidth(), renderer.getScreenHeight(), Color::DarkGray);
+
     // Builds into the generation handleInput()'s routePublished()/
     // publishedData() aren't currently reading, so the loop task never sees
     // this table mid-rebuild — see publish() below and
@@ -235,6 +239,12 @@ class OptionPopup {
     }
     // defaultPopupStyles() has no border, so opt in using the per-theme frame metrics.
     props.styles = fui::defaultPopupStyles();
+    // The modal body is always pure white; selection stays a black pill/outline.
+    props.styles.normal.background = fui::Paint::solid(fui::Color::White);
+    props.styles.selected = props.styles.normal;
+    props.styles.focused = props.styles.normal;
+    props.styles.active = props.styles.normal;
+    props.styles.disabled = props.styles.normal;
     props.styles.normal.border = fui::Paint::solid(fui::Color::Black);
     props.styles.normal.borderWidth = static_cast<uint8_t>(metrics.popupFrameThickness);
     props.styles.normal.radius = static_cast<uint8_t>(metrics.popupCornerRadius);

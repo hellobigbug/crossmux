@@ -1,13 +1,4 @@
-# Manifest for src/components/icons/listIcons.h — regenerate with:
-#   python3 <freeink-sdk>/libs/assets/Icons/tools/gen_icons.py \
-#     --manifest src/components/icons/listIcons.manifest \
-#     --svgdir <freeink-sdk>/libs/assets/Icons/lucide/icons \
-#     --sizes 24,32 --out src/components/icons/listIcons.h
-# then clang-format -i the output.
-#
-# Stock Lucide icons ONLY. Hand-modified icons (sun-filled, moon-filled) live in
-# customListIcons.h, which is not generated — a full regeneration of listIcons.h
-# is safe and must not touch that file.
+# Regenerated for Nokia settings icons ? stock Lucide icons ONLY.
 folder = folder
 file-text = file-text
 image = image
@@ -22,3 +13,18 @@ upload = upload
 download = download
 bookmark = bookmark
 usb = usb
+settings = settings
+clock = clock
+monitor = monitor
+battery = battery
+palette = palette
+type = type
+info = info
+globe = globe
+smartphone = smartphone
+book-open = book-open
+shield = shield
+refresh-ccw = refresh-ccw
+zap = zap
+list = list
+database = database

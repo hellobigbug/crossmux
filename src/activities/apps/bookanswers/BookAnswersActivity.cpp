@@ -40,7 +40,16 @@ void BookAnswersActivity::ask() {
 
 void BookAnswersActivity::loop() {
   const unsigned long now = millis();
+  int tapX = 0;
+  int tapY = 0;
+  const bool tapped = mappedInput.wasScreenTapped(tapX, tapY);
   if (revealing_) {
+    // A tap during the page-flip lands the answer immediately.
+    if (tapped) {
+      revealing_ = false;
+      requestUpdate();
+      return;
+    }
     // Flip the page number upward to sell the "turning pages" illusion.
     if (now - animMs_ >= 90) {
       animMs_ = now;
@@ -61,7 +70,7 @@ void BookAnswersActivity::loop() {
     activityManager.goToApps();
     return;
   }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+  if (tapped || mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
       mappedInput.wasReleased(MappedInputManager::Button::Up) ||
       mappedInput.wasReleased(MappedInputManager::Button::Down)) {
     ask();
@@ -77,26 +86,33 @@ void BookAnswersActivity::render(RenderLock&&) {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BOOK_ANSWERS_TITLE));
 
   const int cardW = pageWidth - 2 * metrics.contentSidePadding;
-  const int cardH = 240;
-  const int marginTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + 60;
+  const int cardH = 260;
+  const int marginTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + 40;
   const int cx = (pageWidth - cardW) / 2;
   renderer.fillRoundedRect(cx, marginTop, cardW, cardH, metrics.controlRadius, Color::White);
   renderer.drawRoundedRect(cx, marginTop, cardW, cardH, 2, metrics.controlRadius, true);
 
   char pageText[8];
   snprintf(pageText, sizeof(pageText), "%d", revealing_ ? animPage_ : page_);
-  renderer.drawCenteredText(SMALL_FONT_ID, marginTop + 30, pageText, false, EpdFontFamily::REGULAR);
+  renderer.drawCenteredText(SMALL_FONT_ID, marginTop + 26, pageText, false, EpdFontFamily::REGULAR);
 
   // During the reveal we show the "turning pages" message; once it lands, show
   // the oracular answer with a subtle underline flourish.
-  const int answerY = marginTop + cardH / 2 - renderer.getLineHeight(UI_12_FONT_ID) / 2;
+  const int answerY = marginTop + cardH / 2 - renderer.getLineHeight(UI_12_FONT_ID) / 2 + 6;
   if (revealing_) {
     renderer.drawCenteredText(UI_12_FONT_ID, answerY, tr(STR_BOOK_ANSWERS_OPENING), true, EpdFontFamily::BOLD);
   } else {
-    renderer.drawCenteredText(UI_12_FONT_ID, answerY, answer_ ? answer_ : "", true, EpdFontFamily::BOLD);
+    // Wrap long answers; short ones stay centered on one line.
+    const std::string answer = answer_ ? answer_ : "";
+    const auto lines = renderer.wrappedText(UI_12_FONT_ID, answer.c_str(), cardW - 48, 3, EpdFontFamily::BOLD);
+    int lineY = answerY - static_cast<int>(lines.size() - 1) * renderer.getLineHeight(UI_12_FONT_ID) / 2;
+    for (const auto& line : lines) {
+      renderer.drawCenteredText(UI_12_FONT_ID, lineY, line.c_str(), true, EpdFontFamily::BOLD);
+      lineY += renderer.getLineHeight(UI_12_FONT_ID);
+    }
     const int answerW = renderer.getTextWidth(UI_12_FONT_ID, answer_ ? answer_ : "", EpdFontFamily::BOLD);
-    renderer.drawLine(cx + (cardW - answerW) / 2, answerY + renderer.getLineHeight(UI_12_FONT_ID), cx + (cardW + answerW) / 2,
-                      answerY + renderer.getLineHeight(UI_12_FONT_ID), 2, true);
+    const int underlineY = answerY + renderer.getLineHeight(UI_12_FONT_ID) + 4;
+    renderer.drawLine(cx + (cardW - answerW) / 2, underlineY, cx + (cardW + answerW) / 2, underlineY, 2, true);
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_BOOK_ANSWERS_RETURN), "", tr(STR_BOOK_ANSWERS_RETURN));

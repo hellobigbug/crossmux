@@ -166,6 +166,13 @@ Rect UITheme::getScreenSafeArea(const GfxRenderer& renderer, bool hasFrontButton
       }
       break;
   }
+  // Touch boundary safety zone: keep 20 px clear on every edge so edge
+  // swipes and palm rests never land on an interactive control.
+  const int edgeInset = metrics.touchEdgeInset;
+  safeArea.x += edgeInset;
+  safeArea.y += edgeInset;
+  safeArea.width -= edgeInset * 2;
+  safeArea.height -= edgeInset * 2;
   return safeArea;
 }
 

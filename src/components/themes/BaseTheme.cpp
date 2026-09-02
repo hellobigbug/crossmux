@@ -803,6 +803,14 @@ void BaseTheme::drawHomeMenu(GfxRenderer& renderer, Rect rect, const int buttonC
   drawButtonMenu(renderer, rect, buttonCount, selectedIndex, buttonLabel, rowIcon);
 }
 
+HomeGridLayout BaseTheme::getHomeGridLayout(const GfxRenderer&, int) const {
+  return {};  // vertical list by default
+}
+
+int BaseTheme::getHomeModuleHeight(const GfxRenderer&, int) const {
+  return UITheme::getInstance().getMetrics().homeCoverTileHeight;
+}
+
 Rect BaseTheme::drawPopup(const GfxRenderer& renderer, const char* message) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int marginX = metrics.popupMarginX;

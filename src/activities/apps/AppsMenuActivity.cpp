@@ -217,15 +217,19 @@ void AppsMenuActivity::rebuildRowItems() {
 }
 
 bool AppsMenuActivity::usesIconLayout() const {
-  return UITheme::getInstance().hasMainTabs() &&
-         InxGridGeometry::layoutFrom(SETTINGS.inxAppsLayout) == InxItemLayout::Icons;
+  const auto type = UITheme::getInstance().getType();
+  const bool gridTheme = type == CrossPointSettings::UI_THEME::INX || type == CrossPointSettings::UI_THEME::NOKIA;
+  return gridTheme && InxGridGeometry::layoutFrom(SETTINGS.inxAppsLayout) == InxItemLayout::Icons;
 }
 
 int AppsMenuActivity::iconIndexFromPoint(const int x, const int y) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int top = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int height = renderer.getScreenHeight() - top - metrics.buttonHintsHeight - metrics.verticalSpacing;
-  return InxGridGeometry::indexFromPoint(x, y - top, renderer.getScreenWidth(), height,
+  // Grid content keeps a 20 px touch safety margin on each side; hit-testing
+  // uses the same inset rect that drawIconGrid paints.
+  const int gridX = 20;
+  return InxGridGeometry::indexFromPoint(x - gridX, y - top, renderer.getScreenWidth() - gridX * 2, height,
                                          InxGridGeometry::pageStart(nav.selected, getVisibleAppCount()),
                                          getVisibleAppCount());
 }
@@ -245,6 +249,27 @@ bool AppsMenuActivity::handleCustomInput() {
   if (!usesIconLayout()) return false;
 
   const int visibleCount = getVisibleAppCount();
+  // Direction buttons move through the grid; Up/Down page over the 3x4 page.
+  if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+    nav.selected = std::min(nav.selected + 1, visibleCount - 1);
+    requestUpdate();
+    return true;
+  }
+  if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+    nav.selected = std::max(0, nav.selected - 1);
+    requestUpdate();
+    return true;
+  }
+  if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
+    nav.selected = ButtonNavigator::nextPageIndex(nav.selected, visibleCount, InxGridGeometry::itemsPerPage);
+    requestUpdate();
+    return true;
+  }
+  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
+    nav.selected = ButtonNavigator::previousPageIndex(nav.selected, visibleCount, InxGridGeometry::itemsPerPage);
+    requestUpdate();
+    return true;
+  }
   int x = 0;
   int y = 0;
   if (mappedInput.wasScreenTouchDown(x, y)) {
@@ -281,6 +306,7 @@ void AppsMenuActivity::drawIconGrid(const Rect& rect, const int visibleCount, co
   const int start = InxGridGeometry::pageStart(nav.selected, visibleCount);
   const int cellWidth = rect.width / InxGridGeometry::columns;
   const int cellHeight = rect.height / InxGridGeometry::rows;
+  const bool nokia = UITheme::getInstance().getType() == CrossPointSettings::UI_THEME::NOKIA;
   const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
   constexpr int iconScale = 2;
   constexpr int iconSize = InxAppIcons::size * iconScale;
@@ -291,17 +317,47 @@ void AppsMenuActivity::drawIconGrid(const Rect& rect, const int visibleCount, co
     if (appIndex < 0) continue;
     const int column = slot % InxGridGeometry::columns;
     const int row = slot / InxGridGeometry::columns;
-    const Rect cell{rect.x + column * cellWidth + 4, rect.y + row * cellHeight + 4, cellWidth - 8, cellHeight - 8};
     const bool isSelected = showSelection && visibleIndex == nav.selected;
-    if (isSelected) renderer.fillRect(cell.x, cell.y, cell.width, cell.height, true);
-
-    const int iconX = cell.x + (cell.width - iconSize) / 2;
-    const int iconY = cell.y + std::max(5, (cell.height - iconSize - lineHeight - 8) / 2);
-    InxAppIcons::draw(renderer, kAppEntries[appIndex].icon, iconX, iconY, iconScale, isSelected);
-    const std::string label =
-        renderer.truncatedText(UI_10_FONT_ID, I18N.get(kAppEntries[appIndex].titleId), std::max(1, cell.width - 8));
-    const int labelX = cell.x + (cell.width - renderer.getTextWidth(UI_10_FONT_ID, label.c_str())) / 2;
-    renderer.drawText(UI_10_FONT_ID, labelX, iconY + iconSize + 8, label.c_str(), !isSelected);
+    if (nokia) {
+      // Smaller soft-key tiles matching the Nokia home style: rounded outline
+      // tiles, selected inverts, and the home-size label font. The icon+label
+      // block is centered in the tile.
+      constexpr int kTilePadX = 7;
+      constexpr int kTilePadY = 6;
+      constexpr int kTileRadius = 26;
+      constexpr int kNokiaIconScale = 2;
+      constexpr int kNokiaIconSize = InxAppIcons::size * kNokiaIconScale;
+      constexpr int kLabelGap = 6;
+#ifdef ENABLE_CHINESE_VERSION
+      constexpr int kLabelFont = UI_12_FONT_ID;
+#else
+      constexpr int kLabelFont = NOTOSANS_16_FONT_ID;
+#endif
+      const Rect tile{rect.x + column * cellWidth + kTilePadX, rect.y + row * cellHeight + kTilePadY,
+                      cellWidth - kTilePadX * 2, cellHeight - kTilePadY * 2};
+      renderer.fillRoundedRect(tile.x, tile.y, tile.width, tile.height, kTileRadius,
+                               isSelected ? Color::Black : Color::White);
+      if (!isSelected) renderer.drawRoundedRect(tile.x, tile.y, tile.width, tile.height, 1, kTileRadius, true);
+      const int iconX = tile.x + (tile.width - kNokiaIconSize) / 2;
+      const int labelLine = renderer.getLineHeight(kLabelFont);
+      const int blockH = kNokiaIconSize + kLabelGap + labelLine;
+      const int iconY = tile.y + std::max(4, (tile.height - blockH) / 2);
+      InxAppIcons::draw(renderer, kAppEntries[appIndex].icon, iconX, iconY, kNokiaIconScale, isSelected);
+      const std::string label =
+          renderer.truncatedText(kLabelFont, I18N.get(kAppEntries[appIndex].titleId), std::max(1, tile.width - 12));
+      const int labelX = tile.x + (tile.width - renderer.getTextWidth(kLabelFont, label.c_str())) / 2;
+      renderer.drawText(kLabelFont, labelX, iconY + kNokiaIconSize + kLabelGap, label.c_str(), !isSelected);
+    } else {
+      const Rect cell{rect.x + column * cellWidth + 4, rect.y + row * cellHeight + 4, cellWidth - 8, cellHeight - 8};
+      if (isSelected) renderer.fillRect(cell.x, cell.y, cell.width, cell.height, true);
+      const int iconX = cell.x + (cell.width - iconSize) / 2;
+      const int iconY = cell.y + std::max(5, (cell.height - iconSize - lineHeight - 8) / 2);
+      InxAppIcons::draw(renderer, kAppEntries[appIndex].icon, iconX, iconY, iconScale, isSelected);
+      const std::string label =
+          renderer.truncatedText(UI_10_FONT_ID, I18N.get(kAppEntries[appIndex].titleId), std::max(1, cell.width - 8));
+      const int labelX = cell.x + (cell.width - renderer.getTextWidth(UI_10_FONT_ID, label.c_str())) / 2;
+      renderer.drawText(UI_10_FONT_ID, labelX, iconY + iconSize + 8, label.c_str(), !isSelected);
+    }
   }
 
   GUI.drawSideScrollBar(renderer, rect, visibleCount, start, InxGridGeometry::itemsPerPage);
@@ -319,7 +375,7 @@ void AppsMenuActivity::buildScreen(UiScreen& screen) {
   if (visibleCount == 0) {
     UITheme::drawCenteredWrappedText(renderer, Rect{0, listY, sw, listH}, UI_12_FONT_ID, tr(STR_NO_APPS_ENABLED), 2);
   } else if (usesIconLayout()) {
-    drawIconGrid(Rect{0, listY, sw, listH}, visibleCount, showSelection);
+    drawIconGrid(Rect{20, listY, sw - 40, listH}, visibleCount, showSelection);
   } else {
     const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
     screen.setContentMargin(fui::Insets{static_cast<int16_t>(listY), static_cast<int16_t>(sw - (safe.x + safe.width)),

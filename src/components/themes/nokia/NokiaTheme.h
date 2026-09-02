@@ -10,22 +10,27 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .batteryHeight = 12,
                                  .topPadding = 4,
                                  .batteryBarHeight = 20,
-                                 .headerHeight = 54,
+                                 // Taller nav bar: roomier back button and
+                                 // more air before the content band.
+                                 .headerHeight = 58,
                                  .verticalSpacing = 10,
                                  .previewPadding = 12,
                                  .previewHeightPercent = 30,
                                  .contentSidePadding = 24,
+                                 .touchEdgeInset = 20,
                                  .listRowHeight = 58,
                                  .listWithSubtitleRowHeight = 84,
                                  .listRowGap = 8,
-                                 .listRowRadius = 24,
+                                 // Rounded-rectangle rows (radius < half the
+                                 // row height) instead of an oval pill.
+                                 .listRowRadius = 10,
                                  .listInset = 0,
                                  .listSidePadding = 20,
                                  .listSelectionStyle = 0,  // invert fill
                                  .listScrollWidth = 4,
                                  .listScrollSide = 0,
                                  .listTitleBold = true,
-                                 .listSeparatorStyle = 0,
+                                 .listSeparatorStyle = 2,  // dotted divider
                                  .listValueMaxWidth = 0,
                                  .listSelectionCoversScrollReservation = false,
                                  .headerSidePadding = 20,
@@ -41,9 +46,15 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .scrollBarWidth = 4,
                                  .scrollBarRightOffset = 5,
                                  .homeTopPadding = 60,
-                                 .homeCoverHeight = 240,
-                                 .homeCoverTileHeight = 300,
-                                 .homeRecentBooksCount = 1,
+                                 .homeCoverHeight = 150,
+                                 // The cover band hosts the "bookshelf + clock"
+                                 // module above the nine-grid, so it reserves a
+                                 // real module height instead of a cover card.
+                                 // NokiaTheme::getHomeModuleHeight adapts this
+                                 // to the square menu grid; 250 is the cap.
+                                 .homeCoverTileHeight = 250,
+                                 // Two book cards side by side in the module.
+                                 .homeRecentBooksCount = 2,
                                  .homeShowRecentBookTitle = false,
                                  .homeContinueReadingInMenu = true,
                                  .homeMenuTopOffset = 16,
@@ -79,7 +90,7 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .optionPopupTitleGap = 18,
                                  .optionPopupUseSmallFont = false,
                                  .optionPopupOptionFontBold = true,
-                                 .optionPopupSelectionRadius = 28,
+                                 .optionPopupSelectionRadius = 12,
                                  .optionPopupSelectionLight = false,
                                  .optionPopupDrawAllRows = true,
                                  .optionPopupDialogSideMargin = 22,
@@ -103,6 +114,18 @@ class NokiaTheme : public RoundedRaffTheme {
   void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                       const std::function<std::string(int index)>& buttonLabel,
                       const std::function<UIIcon(int index)>& rowIcon, int rowSpacing = -1) const override;
+  // Retro Nokia main-screen grid: 3 columns of rounded soft-key tiles with a
+  // 32px icon (drawn at 2x) and a bold label; the selected tile inverts.
+  void drawHomeMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
+                    const std::function<std::string(int index)>& buttonLabel,
+                    const std::function<UIIcon(int index)>& rowIcon) const override;
+  HomeGridLayout getHomeGridLayout(const GfxRenderer& renderer, int itemCount) const override;
+  int getHomeModuleHeight(const GfxRenderer& renderer, int itemCount) const override;
+  HomeCoverStackLayout getHomeCoverStackLayout(const GfxRenderer& renderer, Rect rect, int coverCount) const override;
+  // The cover band draws the bookshelf + clock module above the nine-grid.
+  void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
+                           int selectorIndex, bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
+                           std::function<bool()> storeCoverBuffer) const override;
   void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                        const char* btn4) const override;
   int getMenuRowHeight(const GfxRenderer& renderer) const override;

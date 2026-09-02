@@ -21,6 +21,67 @@ struct Rect {
   explicit Rect(int x = 0, int y = 0, int width = 0, int height = 0) : x(x), y(y), width(width), height(height) {}
 };
 
+// Layout of a grid-style home menu (retro phone "nine-grid"). A theme returns
+// columns <= 1 to opt out and keep the vertical list layout. Drawing and
+// hit-testing both go through the same HomeGridLayout, so touch regions always
+// match the painted cells (see indexFromPoint).
+struct HomeGridLayout {
+  int columns = 0;
+  int rows = 0;
+  int cellX = 0;  // left edge of the first cell
+  int cellY = 0;  // top edge of the first cell
+  int cellWidth = 0;
+  int cellHeight = 0;
+  int gap = 0;
+
+  bool isGrid() const { return columns > 1 && cellWidth > 0 && cellHeight > 0; }
+
+  // Row-major index of the cell containing (x, y), or -1 when the point is
+  // outside the grid band or inside a gap. itemCount bounds the last row.
+  int indexFromPoint(int x, int y, int itemCount) const {
+    if (!isGrid() || itemCount <= 0) return -1;
+    const int stepX = cellWidth + gap;
+    const int stepY = cellHeight + gap;
+    if (stepX <= 0 || stepY <= 0) return -1;
+    if (x < cellX || y < cellY) return -1;
+    const int col = (x - cellX) / stepX;
+    const int row = (y - cellY) / stepY;
+    if (col < 0 || row < 0 || col >= columns || row >= rows) return -1;
+    if ((x - cellX) - col * stepX >= cellWidth) return -1;
+    if ((y - cellY) - row * stepY >= cellHeight) return -1;
+    const int index = row * columns + col;
+    return index < itemCount ? index : -1;
+  }
+};
+
+// Cascade of stacked book covers on the home screen. Cover 0 is the most
+// recent book and sits on top; older covers slide down/right behind it. The
+// same layout drives drawing and touch hit-testing so taps always land on the
+// cover the user sees.
+struct HomeCoverStackLayout {
+  int x = 0;
+  int y = 0;
+  int width = 0;
+  int height = 0;
+  int stepX = 0;
+  int stepY = 0;
+  int count = 0;
+
+  bool isValid() const { return count > 0 && width > 0 && height > 0; }
+
+  // Newest-first scan: the first cover whose painted rect contains the point
+  // wins, which matches the visual stacking order.
+  int indexAt(int px, int py) const {
+    if (!isValid()) return -1;
+    for (int i = 0; i < count; ++i) {
+      const int rx = x + i * stepX;
+      const int ry = y + i * stepY;
+      if (px >= rx && px < rx + width && py >= ry && py < ry + height) return i;
+    }
+    return -1;
+  }
+};
+
 struct TabInfo {
   const char* label;
   bool selected;
@@ -39,6 +100,9 @@ struct ThemeMetrics {
   int previewHeightPercent;
 
   int contentSidePadding;
+  // Extra blank margin kept free on every screen edge as a touch boundary
+  // safety zone (edge gestures and palm rests must not trigger controls).
+  int touchEdgeInset = 0;
   int listRowHeight;
   int listWithSubtitleRowHeight;
   // FreeInkUI list shape, consumed by uiThemeTokens() for screens rendered
@@ -176,7 +240,27 @@ enum UIIcon {
   Achievements,
   Calculator,
   Woodfish,
-  Usb
+  Usb,
+  // Settings-row glyphs (lucide set). Appended so existing enum values stay
+  // stable.
+  Moon,
+  Sun,
+  Battery,
+  Palette,
+  Type,
+  Info,
+  Globe,
+  Clock,
+  Refresh,
+  Monitor,
+  List,
+  Zap,
+  Database,
+  Shield,
+  Smartphone,
+  BookOpen,
+  Upload,
+  Download,
 };
 
 // Default theme implementation (Classic Theme)
@@ -326,6 +410,23 @@ class BaseTheme {
   virtual void drawHomeMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                             const std::function<std::string(int index)>& buttonLabel,
                             const std::function<UIIcon(int index)>& rowIcon) const;
+  // Home menu layout. The default returns an empty layout (vertical list);
+  // grid themes (e.g. Nokia) override it and drawHomeMenu() renders the grid.
+  // HomeActivity uses the same layout for touch hit-testing and button
+  // navigation, so the drawn cells and the input regions can never drift.
+  virtual HomeGridLayout getHomeGridLayout(const GfxRenderer& renderer, int itemCount) const;
+  // Height of the home module band above the menu (bookshelf/clock). The
+  // default is the metrics value; grid themes may adapt it to the space the
+  // menu leaves (see NokiaTheme). HomeActivity passes this to both
+  // drawRecentBookCover and getHomeGridLayout so drawing and hit-testing
+  // never disagree about where the module ends.
+  virtual int getHomeModuleHeight(const GfxRenderer& renderer, int itemCount) const;
+  // Stacked cover cascade layout for themes that put recent books front and
+  // center. The default returns an empty layout (no cover stack).
+  virtual HomeCoverStackLayout getHomeCoverStackLayout(const GfxRenderer& renderer, Rect rect,
+                                                       int coverCount) const {
+    return {};
+  }
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
   virtual void drawOptionPopup(const GfxRenderer& renderer, const char* title, const std::vector<std::string>& options,
                                int selectedIndex) const;

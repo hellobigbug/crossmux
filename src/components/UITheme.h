@@ -20,6 +20,7 @@ class UITheme {
 
   const ThemeMetrics& getMetrics() const;
   const BaseTheme& getTheme() const { return *currentTheme; }
+  CrossPointSettings::UI_THEME getType() const { return currentType; }
   bool usesClassicTabs() const { return currentType == CrossPointSettings::UI_THEME::CLASSIC; }
   bool hasMainTabs() const { return currentType == CrossPointSettings::UI_THEME::INX; }
   bool showSelectionCursor() const;

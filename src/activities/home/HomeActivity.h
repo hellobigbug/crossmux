@@ -49,9 +49,11 @@ class HomeActivity final : public Activity {
   void onFileTransferOpen();
   void onOpdsBrowserOpen();
   void onAppsOpen();
+  void onWeReadOpen();
   void onStandbyOpen();
 
   int getMenuItemCount() const;
+  bool usesGridHome() const;
   static constexpr bool canRenderCarouselMenuOnly(bool isCarousel, bool recentsLoaded, CarouselUpdateScope scope) {
     return isCarousel && recentsLoaded && scope == CarouselUpdateScope::MenuOnly;
   }

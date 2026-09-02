@@ -36,6 +36,43 @@ constexpr uint8_t pageTurnRateForOption(const int option, const uint8_t customRa
 static_assert(pageTurnRateForOption(0, 6) == 0);
 static_assert(pageTurnRateForOption(2, 6) == 6);
 static_assert(pageTurnRateForOption(CUSTOM_PAGE_TURN_OPTION, 7) == 7);
+
+UIIcon menuIconFor(const EpubReaderMenuActivity::MenuAction action) {
+  switch (action) {
+    case EpubReaderMenuActivity::MenuAction::SELECT_CHAPTER:
+      return UIIcon::List;
+    case EpubReaderMenuActivity::MenuAction::FOOTNOTES:
+      return UIIcon::Info;
+    case EpubReaderMenuActivity::MenuAction::BOOKMARKS:
+    case EpubReaderMenuActivity::MenuAction::TOGGLE_BOOKMARK:
+      return UIIcon::Bookmark;
+    case EpubReaderMenuActivity::MenuAction::TEXT_SETTINGS:
+      return UIIcon::Type;
+    case EpubReaderMenuActivity::MenuAction::NIGHT_MODE:
+      return UIIcon::Moon;
+    case EpubReaderMenuActivity::MenuAction::FRONTLIGHT:
+      return UIIcon::Sun;
+    case EpubReaderMenuActivity::MenuAction::DICTIONARY:
+      return UIIcon::BookOpen;
+    case EpubReaderMenuActivity::MenuAction::ROTATE_SCREEN:
+      return UIIcon::Monitor;
+    case EpubReaderMenuActivity::MenuAction::AUTO_PAGE_TURN:
+      return UIIcon::Clock;
+    case EpubReaderMenuActivity::MenuAction::GO_TO_PERCENT:
+      return UIIcon::Zap;
+    case EpubReaderMenuActivity::MenuAction::SCREENSHOT:
+      return UIIcon::Image;
+    case EpubReaderMenuActivity::MenuAction::DISPLAY_QR:
+      return UIIcon::Globe;
+    case EpubReaderMenuActivity::MenuAction::GO_HOME:
+      return UIIcon::Apps;
+    case EpubReaderMenuActivity::MenuAction::SYNC:
+      return UIIcon::Refresh;
+    case EpubReaderMenuActivity::MenuAction::DELETE_CACHE:
+      return UIIcon::Database;
+  }
+  return UIIcon::Settings;
+}
 }  // namespace
 
 EpubReaderMenuActivity::EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -61,6 +98,7 @@ void EpubReaderMenuActivity::buildMenuRowItems() {
   for (size_t i = 0; i < menuItems.size() && i < MAX_MENU_ITEMS; i++) {
     fui::ListItem item;
     item.label = I18N.get(menuItems[i].labelId);
+    item.icon = listIconFor(menuIconFor(menuItems[i].action), 32);
     item.actionValue = static_cast<int16_t>(i);
     menuRowItems[i] = item;
   }

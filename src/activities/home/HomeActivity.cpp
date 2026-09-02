@@ -37,6 +37,9 @@ constexpr HomeMenuEntry kDefaultMenuOrder[] = {
     {HomeMenuItem::FILE_TRANSFER, StrId::STR_FILE_TRANSFER, Transfer},
     {HomeMenuItem::SETTINGS_MENU, StrId::STR_SETTINGS_TITLE, Settings},
     {HomeMenuItem::APPS, StrId::STR_APPS_TITLE, Apps},
+#ifdef ENABLE_CHINESE_VERSION
+    {HomeMenuItem::WEREAD, StrId::STR_WEREAD_TITLE, UIIcon::WeRead},
+#endif
 };
 constexpr HomeMenuEntry kCarouselMenuOrder[] = {
     {HomeMenuItem::FILE_BROWSER, StrId::STR_BROWSE_FILES, Folder},
@@ -45,8 +48,15 @@ constexpr HomeMenuEntry kCarouselMenuOrder[] = {
     {HomeMenuItem::APPS, StrId::STR_APPS_TITLE, Apps},
     {HomeMenuItem::FILE_TRANSFER, StrId::STR_FILE_TRANSFER, Transfer},
     {HomeMenuItem::SETTINGS_MENU, StrId::STR_SETTINGS_TITLE, Settings},
+#ifdef ENABLE_CHINESE_VERSION
+    {HomeMenuItem::WEREAD, StrId::STR_WEREAD_TITLE, UIIcon::WeRead},
+#endif
 };
+#ifdef ENABLE_CHINESE_VERSION
+constexpr int kHomeMenuItemCount = 7;
+#else
 constexpr int kHomeMenuItemCount = 6;
+#endif
 
 constexpr const HomeMenuEntry* menuEntryAtIndex(int index, bool hasOpds, bool carousel) {
   if (index < 0) return nullptr;
@@ -76,17 +86,43 @@ static_assert(indexToMenuItem(2, false, false) == HomeMenuItem::FILE_TRANSFER);
 static_assert(indexToMenuItem(4, false, false) == HomeMenuItem::APPS);
 static_assert(menuItemToIndex(HomeMenuItem::APPS, false, true) == 2);
 static_assert(menuItemToIndex(HomeMenuItem::SETTINGS_MENU, true, true) == 5);
+
+// Move a selection inside a row-major home grid, wrapping at the grid edges.
+// A wrap target past the end of a short row clamps to the last item.
+int gridMoveIndex(int current, int itemCount, const HomeGridLayout& layout, int dCol, int dRow) {
+  if (itemCount <= 0 || current < 0 || current >= itemCount || !layout.isGrid()) return current;
+  const int columns = layout.columns;
+  const int rows = layout.rows;
+  int row = current / columns;
+  int col = current % columns;
+  row = (row + dRow + rows) % rows;
+  col = (col + dCol + columns) % columns;
+  const int next = row * columns + col;
+  return next < itemCount ? next : itemCount - 1;
+}
 }  // namespace
 
 int HomeActivity::getMenuItemCount() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  if (usesGridHome()) {
+    // Grid homes keep books out of the menu entirely: covers live in the
+    // stacked cascade band above the grid.
+    return hasOpdsServers ? kHomeMenuItemCount : kHomeMenuItemCount - 1;
+  }
   int count = 5;  // File Browser, Recents, File transfer, Settings, Apps
-  if (!recentBooks.empty()) {
-    count += recentBooks.size();
+  if (metrics.homeContinueReadingInMenu) {
+    // Continue-reading is a single row in the menu, however many covers the
+    // bookshelf module shows.
+    if (!recentBooks.empty()) ++count;
+  } else {
+    count += static_cast<int>(recentBooks.size());
   }
-  if (hasOpdsServers) {
-    count++;
-  }
+  if (hasOpdsServers) ++count;
   return count;
+}
+
+bool HomeActivity::usesGridHome() const {
+  return UITheme::getInstance().getType() == CrossPointSettings::UI_THEME::NOKIA;
 }
 
 void HomeActivity::requestCarouselUpdate(CarouselUpdateScope scope) {
@@ -229,7 +265,11 @@ void HomeActivity::onEnter() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   loadRecentBooks(metrics.homeRecentBooksCount);
 
-  const auto base = static_cast<int>(recentBooks.size());
+  const bool gridHome = usesGridHome();
+  const bool continueReadingInMenu = metrics.homeContinueReadingInMenu && !gridHome;
+  const auto base =
+      gridHome ? 0 : (continueReadingInMenu ? (recentBooks.empty() ? 0 : 1)
+                                            : static_cast<int>(recentBooks.size()));
   const bool isCarousel =
       static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
   selectorIndex =
@@ -298,16 +338,33 @@ void HomeActivity::loop() {
   const int menuCount = getMenuItemCount();
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int bookCount = static_cast<int>(recentBooks.size());
-  const int renderedMenuCount = menuCount - (metrics.homeContinueReadingInMenu ? 0 : bookCount);
   const bool isCarousel =
       static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
+  const bool gridHome = usesGridHome();
+  const bool continueReadingInMenu = metrics.homeContinueReadingInMenu && !gridHome;
+  const int renderedMenuCount = gridHome ? menuCount : menuCount - (continueReadingInMenu ? 0 : bookCount);
+  const HomeGridLayout homeGrid = GUI.getHomeGridLayout(renderer, renderedMenuCount);
+  // Grid cells are indexed in menu space (renderedMenuCount items); the
+  // selectorIndex is offset by the book count unless Continue-reading rows are
+  // part of the menu itself.
+  const int gridSelectionOffset = gridHome ? 0 : (continueReadingInMenu ? 0 : bookCount);
 
-  auto activateSelection = [this, isCarousel] {
-    if (selectorIndex < recentBooks.size()) {
-      onSelectBook(recentBooks[selectorIndex].path);
+  const auto moveGridSelection = [this, &homeGrid, renderedMenuCount, gridSelectionOffset](int dCol, int dRow) {
+    const int gridSelected = selectorIndex - gridSelectionOffset;
+    const int next = gridMoveIndex(gridSelected, renderedMenuCount, homeGrid, dCol, dRow);
+    selectorIndex = next + gridSelectionOffset;
+    requestUpdate();
+  };
+
+  auto activateSelection = [this, isCarousel, continueReadingInMenu, gridHome] {
+    const int recentCount = static_cast<int>(recentBooks.size());
+    const bool bookSelection =
+        !gridHome && (continueReadingInMenu ? (recentCount > 0 && selectorIndex == 0) : (selectorIndex < recentCount));
+    if (bookSelection) {
+      onSelectBook(recentBooks[continueReadingInMenu ? 0 : selectorIndex].path);
       return;
     }
-    const int menuIndex = selectorIndex - static_cast<int>(recentBooks.size());
+    const int menuIndex = gridHome ? selectorIndex : selectorIndex - (continueReadingInMenu ? 1 : recentCount);
     switch (indexToMenuItem(menuIndex, hasOpdsServers, isCarousel)) {
       case HomeMenuItem::FILE_BROWSER:
         onFileBrowserOpen();
@@ -326,6 +383,9 @@ void HomeActivity::loop() {
         break;
       case HomeMenuItem::APPS:
         onAppsOpen();
+        break;
+      case HomeMenuItem::WEREAD:
+        onWeReadOpen();
         break;
       default:
         break;
@@ -367,6 +427,24 @@ void HomeActivity::loop() {
         }
         requestCarouselUpdate(CarouselUpdateScope::Full);
       }
+      return;
+    }
+  } else if (gridHome) {
+    // Retro phone grid: Left/Right walk a row, Up/Down walk a column.
+    if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+      moveGridSelection(+1, 0);
+      return;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+      moveGridSelection(-1, 0);
+      return;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
+      moveGridSelection(0, +1);
+      return;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
+      moveGridSelection(0, -1);
       return;
     }
   } else {
@@ -419,6 +497,24 @@ void HomeActivity::loop() {
       case MappedInputManager::SwipeDir::None:
         break;
     }
+  } else if (gridHome) {
+    // Swipes follow the visual flow: Up/Right advance the grid selection.
+    if (swipe == MappedInputManager::SwipeDir::Up) {
+      moveGridSelection(0, +1);
+      return;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Down) {
+      moveGridSelection(0, -1);
+      return;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Right) {
+      moveGridSelection(+1, 0);
+      return;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Left) {
+      moveGridSelection(-1, 0);
+      return;
+    }
   } else {
     if (swipe == MappedInputManager::SwipeDir::Up) {
       selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
@@ -434,8 +530,10 @@ void HomeActivity::loop() {
 
   int tx = 0;
   int ty = 0;
-  if (!recentBooks.empty() && mappedInput.wasScreenTouchDown(tx, ty) && tx >= 0 && tx < renderer.getScreenWidth() &&
-      ty >= metrics.homeTopPadding && ty < metrics.homeTopPadding + metrics.homeCoverTileHeight) {
+  const bool hasCoverArea = metrics.homeCoverTileHeight > 0;
+  if (!gridHome && hasCoverArea && !recentBooks.empty() && mappedInput.wasScreenTouchDown(tx, ty) &&
+      tx >= 0 && tx < renderer.getScreenWidth() && ty >= metrics.homeTopPadding &&
+      ty < metrics.homeTopPadding + metrics.homeCoverTileHeight) {
     int touchedBook = 0;
     if (isCarousel) {
       const int centerBook =
@@ -456,44 +554,87 @@ void HomeActivity::loop() {
     return;
   }
 
-  if (!recentBooks.empty() &&
+  if (!gridHome && hasCoverArea && !recentBooks.empty() &&
       mappedInput.wasTapInRect(0, metrics.homeTopPadding, renderer.getScreenWidth(), metrics.homeCoverTileHeight)) {
     if (!isCarousel) selectorIndex = 0;
     activateSelection();
     return;
   }
 
-  const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
-  const int renderedMenuSelection =
-      metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size();
-  int menuRow = -1;
-  MappedInputManager::RowTouch menuTouch;
-  if (isCarousel) {
-    const int menuBottom = renderer.getScreenHeight();
-    const int columnWidth = renderer.getScreenWidth() / renderedMenuCount;
-    menuTouch = mappedInput.colTouch(menuRow, 0, columnWidth, renderedMenuCount, menuBottom - metrics.menuRowHeight,
-                                     menuBottom, columnWidth);
-  } else {
-    menuTouch = mappedInput.rowTouch(menuRow, menuTop, metrics.menuRowHeight + metrics.menuSpacing, renderedMenuCount,
-                                     0, INT32_MAX, metrics.menuRowHeight);
-  }
-  if (menuTouch != MappedInputManager::RowTouch::None) {
-    const int touchedIndex =
-        metrics.homeContinueReadingInMenu ? menuRow : menuRow + static_cast<int>(recentBooks.size());
-    if (menuTouch == MappedInputManager::RowTouch::Down) {
-      if (selectorIndex != touchedIndex) {
-        selectorIndex = touchedIndex;
-        if (isCarousel) {
-          requestCarouselUpdate(CarouselUpdateScope::MenuOnly);
-        } else {
+  if (gridHome) {
+    // Stacked cover cascade: same geometry the theme draws, so taps land on
+    // the exact cover the user sees (newest on top, older ones below/right).
+    const int coverMenuCount = hasOpdsServers ? kHomeMenuItemCount : kHomeMenuItemCount - 1;
+    const int coverModuleHeight = GUI.getHomeModuleHeight(renderer, coverMenuCount);
+    const Rect coverStackRect{0, metrics.homeTopPadding, renderer.getScreenWidth(), coverModuleHeight};
+    const HomeCoverStackLayout coverStack =
+        GUI.getHomeCoverStackLayout(renderer, coverStackRect, static_cast<int>(recentBooks.size()));
+    if (coverStack.isValid()) {
+      if (mappedInput.wasScreenTouchDown(tx, ty)) {
+        const int touched = coverStack.indexAt(tx, ty);
+        if (touched >= 0) return;
+      }
+      if (mappedInput.wasScreenTapped(tx, ty)) {
+        const int touched = coverStack.indexAt(tx, ty);
+        if (touched >= 0) {
+          onSelectBook(recentBooks[touched].path);
+          return;
+        }
+      }
+    }
+    // Hit-test the painted grid cells (same geometry the theme draws with).
+    if (mappedInput.wasScreenTouchDown(tx, ty)) {
+      const int touched = homeGrid.indexFromPoint(tx, ty, renderedMenuCount);
+      if (touched >= 0) {
+        const int target = touched + gridSelectionOffset;
+        if (selectorIndex != target) {
+          selectorIndex = target;
           requestUpdate();
         }
       }
-    } else {
-      selectorIndex = touchedIndex;
-      activateSelection();
+      return;
     }
-    return;
+    if (mappedInput.wasScreenTapped(tx, ty)) {
+      const int touched = homeGrid.indexFromPoint(tx, ty, renderedMenuCount);
+      if (touched >= 0) {
+        selectorIndex = touched + gridSelectionOffset;
+        activateSelection();
+      }
+      return;
+    }
+  } else {
+    const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
+    const int renderedMenuSelection =
+        metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size();
+    int menuRow = -1;
+    MappedInputManager::RowTouch menuTouch;
+    if (isCarousel) {
+      const int menuBottom = renderer.getScreenHeight();
+      const int columnWidth = renderer.getScreenWidth() / renderedMenuCount;
+      menuTouch = mappedInput.colTouch(menuRow, 0, columnWidth, renderedMenuCount, menuBottom - metrics.menuRowHeight,
+                                       menuBottom, columnWidth);
+    } else {
+      menuTouch = mappedInput.rowTouch(menuRow, menuTop, metrics.menuRowHeight + metrics.menuSpacing,
+                                       renderedMenuCount, 0, INT32_MAX, metrics.menuRowHeight);
+    }
+    if (menuTouch != MappedInputManager::RowTouch::None) {
+      const int touchedIndex =
+          metrics.homeContinueReadingInMenu ? menuRow : menuRow + static_cast<int>(recentBooks.size());
+      if (menuTouch == MappedInputManager::RowTouch::Down) {
+        if (selectorIndex != touchedIndex) {
+          selectorIndex = touchedIndex;
+          if (isCarousel) {
+            requestCarouselUpdate(CarouselUpdateScope::MenuOnly);
+          } else {
+            requestUpdate();
+          }
+        }
+      } else {
+        selectorIndex = touchedIndex;
+        activateSelection();
+      }
+      return;
+    }
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -524,9 +665,10 @@ void HomeActivity::render(RenderLock&&) {
   const auto pageHeight = renderer.getScreenHeight();
   const bool isCarousel =
       static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
+  const bool gridHome = usesGridHome();
 
   const int homeMenuItemCount = hasOpdsServers ? kHomeMenuItemCount : kHomeMenuItemCount - 1;
-  const bool showContinueReading = metrics.homeContinueReadingInMenu && !recentBooks.empty();
+  const bool showContinueReading = metrics.homeContinueReadingInMenu && !recentBooks.empty() && !gridHome;
   std::vector<const char*> menuItems;
   std::vector<UIIcon> menuIcons;
   menuItems.reserve(homeMenuItemCount + (showContinueReading ? 1 : 0));
@@ -543,9 +685,17 @@ void HomeActivity::render(RenderLock&&) {
   }
 
   const Rect headerRect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding};
-  const Rect menuRect{0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset, pageWidth,
-                      pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
-                                    metrics.homeMenuTopOffset + metrics.buttonHintsHeight)};
+  const HomeGridLayout homeGrid = GUI.getHomeGridLayout(renderer, static_cast<int>(menuItems.size()));
+  const int homeModuleHeight = GUI.getHomeModuleHeight(renderer, static_cast<int>(menuItems.size()));
+  Rect menuRect{0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset, pageWidth,
+                pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
+                              metrics.homeMenuTopOffset + metrics.buttonHintsHeight)};
+  if (homeGrid.isGrid()) {
+    // Grid themes own the home band: bound it to exactly the painted grid so
+    // nothing can spill past the screen bottom edge.
+    menuRect = Rect{0, homeGrid.cellY, pageWidth,
+                    homeGrid.rows * homeGrid.cellHeight + (homeGrid.rows - 1) * homeGrid.gap};
+  }
   auto drawHeader = [&] {
     GUI.drawHeader(renderer, headerRect,
                    metrics.homeShowRecentBookTitle && !recentBooks.empty() ? recentBooks[0].title.c_str() : nullptr);
@@ -585,10 +735,10 @@ void HomeActivity::render(RenderLock&&) {
   coverRectX = 0;
   coverRectY = metrics.homeTopPadding;
   coverRectW = pageWidth;
-  coverRectH = metrics.homeCoverTileHeight;
+  coverRectH = homeModuleHeight;
 
-  GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
-                          recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
+  GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, homeModuleHeight}, recentBooks,
+                          selectorIndex, coverRendered, coverBufferStored, bufferRestored,
                           std::bind(&HomeActivity::storeCoverBuffer, this));
 
   drawMenu();
@@ -623,5 +773,11 @@ void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
 
 void HomeActivity::onAppsOpen() { activityManager.goToApps(); }
+
+void HomeActivity::onWeReadOpen() {
+#ifdef ENABLE_CHINESE_VERSION
+  activityManager.goToWeRead();
+#endif
+}
 
 void HomeActivity::onStandbyOpen() { activityManager.goToStandby(); }

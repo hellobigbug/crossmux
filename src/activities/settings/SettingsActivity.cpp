@@ -65,6 +65,153 @@ enum class AboutRow : uint8_t {
   Count,
 };
 
+// Icon for every settings row. Action/sub-screen entries are matched by name;
+// plain enum/toggle settings fall back to a category glyph so no row is ever
+// icon-less.
+UIIcon settingsRowIcon(const SettingInfo& setting) {
+  switch (setting.nameId) {
+    // --- Display ---
+    case StrId::STR_SLEEP_SCREEN:
+    case StrId::STR_NIGHT_MODE:
+      return UIIcon::Moon;
+    case StrId::STR_SLEEP_COVER_MODE:
+      return UIIcon::Image;
+    case StrId::STR_SLEEP_COVER_FILTER:
+    case StrId::STR_UI_THEME:
+      return UIIcon::Palette;
+    case StrId::STR_QUICK_RESUME_TIMEOUT:
+      return UIIcon::Zap;
+    case StrId::STR_STANDBY_TITLE:
+      return UIIcon::Standby;
+    case StrId::STR_HIDE_BATTERY:
+      return UIIcon::Battery;
+    case StrId::STR_REFRESH_FREQ:
+      return UIIcon::Refresh;
+    case StrId::STR_SUNLIGHT_FADING_FIX:
+    case StrId::STR_RESTORE_LIGHT_ON_WAKE:
+    case StrId::STR_FRONTLIGHT:
+      return UIIcon::Sun;
+    case StrId::STR_SHOW_BUTTON_HINTS:
+      return UIIcon::Info;
+    // --- Reader ---
+    case StrId::STR_FONT_FAMILY:
+    case StrId::STR_FONT_SIZE:
+    case StrId::STR_FAKE_BOLD:
+    case StrId::STR_TEXT_SETTINGS:
+      return UIIcon::Type;
+    case StrId::STR_LINE_SPACING:
+    case StrId::STR_PARA_ALIGNMENT:
+    case StrId::STR_READING_GUIDE_LINE:
+    case StrId::STR_READING_GUIDE_LINE_STYLE:
+    case StrId::STR_HYPHENATION:
+    case StrId::STR_EXTRA_SPACING:
+    case StrId::STR_READER_MENU_STYLE:
+      return UIIcon::List;
+    case StrId::STR_EMBEDDED_STYLE:
+      return UIIcon::BookOpen;
+    case StrId::STR_FOCUS_READING:
+      return UIIcon::Zap;
+    case StrId::STR_READING_BACKGROUND:
+    case StrId::STR_TEXT_AA:
+      return UIIcon::Palette;
+    case StrId::STR_IMAGES:
+      return UIIcon::Image;
+    case StrId::STR_DAILY_GOAL:
+    case StrId::STR_READING_STATS:
+      return UIIcon::Database;
+    case StrId::STR_ENABLE_ACHIEVEMENTS:
+      return UIIcon::Shield;
+    case StrId::STR_ACHIEVEMENT_POPUPS:
+      return UIIcon::Info;
+    case StrId::STR_OPDS_DOWNLOAD_FOLDER:
+    case StrId::STR_OPDS_FILENAME_FORMAT:
+    case StrId::STR_OPDS_SERVERS:
+      return UIIcon::Library;
+    case StrId::STR_DOCUMENT_MATCHING:
+      return UIIcon::Library;
+    case StrId::STR_SEND_METADATA:
+      return UIIcon::Upload;
+    case StrId::STR_SYNC_BEHAVIOR:
+    case StrId::STR_KOREADER_SYNC:
+      return UIIcon::Refresh;
+    case StrId::STR_CHAPTER_PAGE_COUNT:
+    case StrId::STR_BOOK_PROGRESS_PERCENTAGE:
+    case StrId::STR_PROGRESS_BAR:
+    case StrId::STR_PROGRESS_BAR_THICKNESS:
+    case StrId::STR_TITLE:
+    case StrId::STR_BATTERY:
+    case StrId::STR_XTC_STATUS_BAR:
+    case StrId::STR_CLOCK:
+    case StrId::STR_CLOCK_FORMAT:
+    case StrId::STR_AUTO_TIME:
+    case StrId::STR_CUSTOMISE_STATUS_BAR:
+      return UIIcon::Monitor;
+    case StrId::STR_MANAGE_FONTS:
+      return UIIcon::Download;
+    case StrId::STR_MANAGE_DICTIONARIES:
+      return UIIcon::BookOpen;
+    // --- Controls ---
+    case StrId::STR_ORIENTATION:
+    case StrId::STR_TOUCH_READER_CONTROLS:
+    case StrId::STR_FRONT_BTN_FOLLOW_ORIENTATION:
+    case StrId::STR_TILT_PAGE_TURN:
+      return UIIcon::Smartphone;
+    case StrId::STR_SIDE_BTN_LAYOUT:
+    case StrId::STR_SHOW_READER_MENU:
+      return UIIcon::List;
+    case StrId::STR_LONG_PRESS_BEHAVIOR:
+    case StrId::STR_SHORT_PWR_BTN:
+      return UIIcon::Zap;
+    case StrId::STR_LONG_PRESS_MENU:
+    case StrId::STR_PWR_BTN_FOOTNOTE_BACK:
+      return UIIcon::Bookmark;
+    case StrId::STR_BACK_SHORT_TO_FILE_BROWSER:
+    case StrId::STR_MOVE_FINISHED_TO_READ:
+      return UIIcon::Folder;
+    case StrId::STR_SHOW_HIDDEN_FILES:
+      return UIIcon::Info;
+    case StrId::STR_REMAP_FRONT_BUTTONS:
+      return UIIcon::Settings;
+    // --- System ---
+    case StrId::STR_REMOVE_READ_FROM_RECENTS:
+      return UIIcon::Book;
+    case StrId::STR_APP_VISIBILITY:
+      return UIIcon::Apps;
+    case StrId::STR_WIFI_NETWORKS:
+      return UIIcon::Wifi;
+    case StrId::STR_DATE_AND_TIME:
+      return UIIcon::Clock;
+    case StrId::STR_CLEAR_READING_CACHE:
+      return UIIcon::Database;
+    case StrId::STR_RESTORE_SYSTEM_SETTINGS:
+    case StrId::STR_CHECK_UPDATES:
+      return UIIcon::Refresh;
+    case StrId::STR_SD_FIRMWARE_UPDATE:
+      return UIIcon::Download;
+    case StrId::STR_LANGUAGE:
+      return UIIcon::Globe;
+    case StrId::STR_ABOUT:
+      return UIIcon::Info;
+    default:
+      break;
+  }
+  switch (setting.category) {
+    case StrId::STR_CAT_DISPLAY:
+      return UIIcon::Monitor;
+    case StrId::STR_CAT_READER:
+      return UIIcon::Book;
+    default:
+      return UIIcon::Settings;
+  }
+}
+
+// Settings grid/tab labels use the same size as the Nokia home grid text.
+#ifdef ENABLE_CHINESE_VERSION
+constexpr int kGridLabelFontId = UI_12_FONT_ID;
+#else
+constexpr int kGridLabelFontId = NOTOSANS_16_FONT_ID;
+#endif
+
 class AboutActivity final : public Activity {
  public:
   AboutActivity(GfxRenderer& renderer, MappedInputManager& mappedInput) : Activity("About", renderer, mappedInput) {}
@@ -343,6 +490,7 @@ void SettingsActivity::selectCategory(const int categoryIndex) {
   }
   settingsCount = static_cast<int>(currentSettings->size());
   activeNav().top = 0;  // category switches start the list at the top (no per-tab memory here)
+  gridSelected_ = 0;
   rebuildRowItems();
 }
 
@@ -363,6 +511,7 @@ void SettingsActivity::rebuildRowItems() {
     fui::ListItem item;
     item.label = I18N.get(settings[i].nameId);
     item.actionValue = static_cast<int16_t>(i);
+    item.icon = listIconFor(settingsRowIcon(settings[i]), 32);
     rowItems_.push_back(item);
   }
 }
@@ -389,7 +538,12 @@ void SettingsActivity::rebuildAccordionRows() {
     fui::ListItem item;
     item.label = rowLabels_[index].c_str();
     item.actionValue = static_cast<int16_t>(index);
-    if (category) item.state = fui::StateEmphasized;
+    if (category) {
+      item.state = fui::StateEmphasized;
+      item.icon = listIconFor(UIIcon::Settings, 32);
+    } else {
+      item.icon = listIconFor(settingsRowIcon(settingsForCategory(row.category)[row.setting]), 32);
+    }
     rowItems_.push_back(item);
   }
 }
@@ -460,7 +614,108 @@ void SettingsActivity::applyUiSettingChange(uint8_t CrossPointSettings::* valueP
 }
 
 bool SettingsActivity::handleCustomInput() {
-  return optionPopup.handleInput(mappedInput, [this] { requestUpdate(); });
+  if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return true;
+  if (!usesGridLayout()) return false;
+
+  const int count = settingsCount;
+  const HomeGridLayout layout = settingsGridLayout();
+  if (count <= 0 || !layout.isGrid()) return false;
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  constexpr int kTabGap = 8;
+  constexpr int kTabHeight = 52;
+  const int pageWidth = renderer.getScreenWidth();
+  const int tabY = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int tabX0 = metrics.contentSidePadding;
+  const int tabWidth = (pageWidth - tabX0 * 2 - kTabGap * (categoryCount - 1)) / categoryCount;
+
+  int downX = 0;
+  int downY = 0;
+  int tapX = 0;
+  int tapY = 0;
+  const bool touched = mappedInput.wasScreenTouchDown(downX, downY);
+  const bool tapped = mappedInput.wasScreenTapped(tapX, tapY);
+
+  // Category tab taps switch the active category.
+  if (tapped && tapY >= tabY && tapY < tabY + kTabHeight) {
+    const int c = (tapX - tabX0) / (tabWidth + kTabGap);
+    if (c >= 0 && c < categoryCount && c != selectedCategoryIndex) {
+      selectCategory(c);
+      gridSelected_ = 0;
+      requestUpdate();
+    }
+    return true;
+  }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    SETTINGS.saveToFile();
+    onGoHome();
+    return true;
+  }
+
+  // Direction buttons walk the grid; leaving the top/bottom edge moves to the
+  // neighbouring category.
+  if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+    gridSelected_ = std::min(gridSelected_ + 1, count - 1);
+    requestUpdate();
+    return true;
+  }
+  if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+    gridSelected_ = std::max(0, gridSelected_ - 1);
+    requestUpdate();
+    return true;
+  }
+  if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
+    if (gridSelected_ + layout.columns >= count) {
+      selectCategory((selectedCategoryIndex + 1) % categoryCount);
+      gridSelected_ = 0;
+    } else {
+      gridSelected_ += layout.columns;
+    }
+    requestUpdate();
+    return true;
+  }
+  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
+    if (gridSelected_ - layout.columns < 0) {
+      const int prev = (selectedCategoryIndex + categoryCount - 1) % categoryCount;
+      selectCategory(prev);
+      gridSelected_ = std::max(0, static_cast<int>(settingsForCategory(prev).size()) - 1);
+    } else {
+      gridSelected_ -= layout.columns;
+    }
+    requestUpdate();
+    return true;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    activateGridSetting();
+    return true;
+  }
+
+  if (touched) {
+    const int hit = layout.indexFromPoint(downX, downY, count);
+    if (hit >= 0 && hit != gridSelected_) {
+      gridSelected_ = hit;
+      requestUpdate();
+    }
+    return true;
+  }
+  if (tapped) {
+    const int hit = layout.indexFromPoint(tapX, tapY, count);
+    if (hit >= 0) {
+      gridSelected_ = hit;
+      activateGridSetting();
+    }
+    return true;
+  }
+
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down) {
+    const int step = (swipe == MappedInputManager::SwipeDir::Down) ? layout.columns : -layout.columns;
+    gridSelected_ = std::clamp(gridSelected_ + step, 0, count - 1);
+    requestUpdate();
+    return true;
+  }
+  return false;
 }
 
 void SettingsActivity::navigateButtons() {
@@ -528,6 +783,122 @@ bool SettingsActivity::handleButtons() {
 }
 
 bool SettingsActivity::usesAccordion() const { return UITheme::getInstance().hasMainTabs(); }
+
+bool SettingsActivity::usesGridLayout() const {
+  return !usesAccordion() && UITheme::getInstance().getType() == CrossPointSettings::UI_THEME::NOKIA;
+}
+
+const char* SettingsActivity::tabLabel(const int index) const {
+  // On the small-screen grid layout the Reader tab uses the short label so all
+  // four tabs fit without crowding.
+  if (usesGridLayout() && index == 1) return I18N.get(StrId::STR_CAT_READER_SHORT);
+  return I18N.get(categoryNames[index]);
+}
+
+HomeGridLayout SettingsActivity::settingsGridLayout() const {
+  HomeGridLayout layout;
+  const int count = settingsCount;
+  if (count <= 0) return layout;
+
+  constexpr int kColumns = 3;
+  constexpr int kGap = 10;
+  constexpr int kSidePadding = 24;
+  constexpr int kTabBandHeight = 52;
+  constexpr int kTabGap = 8;
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  const int top = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + kTabBandHeight + kTabGap;
+  const int bottom = pageHeight - metrics.buttonHintsHeight - kTabGap;
+  if (bottom <= top) return layout;
+
+  const int gridWidth = pageWidth - kSidePadding * 2;
+  const int cellWidth = (gridWidth - (kColumns - 1) * kGap) / kColumns;
+  const int rows = (count + kColumns - 1) / kColumns;
+  const int availableHeight = bottom - top;
+  const int cellHeight = std::min(120, (availableHeight - (rows - 1) * kGap) / rows);
+  if (cellWidth <= 0 || cellHeight <= 0) return layout;
+
+  const int gridHeight = rows * cellHeight + (rows - 1) * kGap;
+  layout.columns = kColumns;
+  layout.rows = rows;
+  layout.cellX = (pageWidth - gridWidth) / 2;
+  // Buttons hug the top of the grid band: top-aligned, never centered.
+  layout.cellY = top;
+  layout.cellWidth = cellWidth;
+  layout.cellHeight = cellHeight;
+  layout.gap = kGap;
+  return layout;
+}
+
+void SettingsActivity::drawSettingsGrid(UiScreen& screen) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+
+  // Category tabs: four small Nokia pills in one row.
+  constexpr int kTabGap = 8;
+  constexpr int kTabHeight = 52;
+  const int tabY = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int tabX0 = metrics.contentSidePadding;
+  const int tabWidth = (pageWidth - tabX0 * 2 - kTabGap * (categoryCount - 1)) / categoryCount;
+  for (int c = 0; c < categoryCount; ++c) {
+    const int x = tabX0 + c * (tabWidth + kTabGap);
+    const bool selected = c == selectedCategoryIndex;
+    renderer.fillRoundedRect(x, tabY, tabWidth, kTabHeight, 26, selected ? Color::Black : Color::White);
+    if (!selected) renderer.drawRoundedRect(x, tabY, tabWidth, kTabHeight, 1, 26, true);
+    const char* label = tabLabel(c);
+    const int labelW = renderer.getTextWidth(kGridLabelFontId, label, EpdFontFamily::BOLD);
+    const int labelY = tabY + (kTabHeight - renderer.getLineHeight(kGridLabelFontId)) / 2;
+    renderer.drawText(kGridLabelFontId, x + (tabWidth - labelW) / 2, labelY, label, !selected, EpdFontFamily::BOLD);
+  }
+
+  // Setting tiles: icon + label, selected inverts (Nokia soft-key style).
+  const HomeGridLayout layout = settingsGridLayout();
+  if (!layout.isGrid()) return;
+  const auto& settings = *currentSettings;
+  for (int i = 0; i < static_cast<int>(settings.size()); ++i) {
+    const int col = i % layout.columns;
+    const int row = i / layout.columns;
+    const int x = layout.cellX + col * (layout.cellWidth + layout.gap);
+    const int y = layout.cellY + row * (layout.cellHeight + layout.gap);
+    const bool isSelected = i == gridSelected_;
+    renderer.fillRoundedRect(x, y, layout.cellWidth, layout.cellHeight, 26,
+                             isSelected ? Color::Black : Color::White);
+    if (!isSelected) renderer.drawRoundedRect(x, y, layout.cellWidth, layout.cellHeight, 1, 26, true);
+
+    const std::string label = renderer.truncatedText(kGridLabelFontId, I18N.get(settings[i].nameId),
+                                                     std::max(1, layout.cellWidth - 14), EpdFontFamily::BOLD);
+    const int labelW = renderer.getTextWidth(kGridLabelFontId, label.c_str(), EpdFontFamily::BOLD);
+    const int labelLine = renderer.getLineHeight(kGridLabelFontId);
+    if (rowItems_[i].icon) {
+      // Icon + label as one block, centered in the tile (both axes).
+      const int iconSize = rowItems_[i].icon.width;
+      constexpr int kIconLabelGap = 8;
+      const int blockH = iconSize + kIconLabelGap + labelLine;
+      const int iconY = y + 12;
+      const int iconX = x + (layout.cellWidth - iconSize) / 2;
+      screen.target().bitmap(
+          freeink::ui::Rect{static_cast<int16_t>(iconX), static_cast<int16_t>(iconY),
+                            static_cast<int16_t>(iconSize), static_cast<int16_t>(iconSize)},
+          rowItems_[i].icon, freeink::ui::BitmapMode::Contain,
+          freeink::ui::Paint::solid(isSelected ? freeink::ui::Color::White : freeink::ui::Color::Black));
+      renderer.drawText(kGridLabelFontId, x + (layout.cellWidth - labelW) / 2, iconY + iconSize + kIconLabelGap,
+                        label.c_str(), !isSelected, EpdFontFamily::BOLD);
+    } else {
+      renderer.drawText(kGridLabelFontId, x + (layout.cellWidth - labelW) / 2,
+                        y + 12, label.c_str(), !isSelected, EpdFontFamily::BOLD);
+    }
+  }
+}
+
+void SettingsActivity::activateGridSetting() {
+  if (gridSelected_ < 0 || gridSelected_ >= settingsCount) return;
+  // Reuse the list activation path, which reads the ring position.
+  tabNavs[static_cast<size_t>(selectedCategoryIndex)].selected = gridSelected_ + 1;
+  app.clearTapFlash();
+  toggleCurrentSetting();
+  requestUpdate();
+}
 
 const std::vector<SettingInfo>& SettingsActivity::settingsForCategory(const int categoryIndex) const {
   switch (categoryIndex) {
@@ -601,33 +972,40 @@ void SettingsActivity::toggleCurrentSetting() {
   }
 
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
-    // Toggle the boolean value using the member pointer
-    const bool currentValue = SETTINGS.*(setting.valuePtr);
-    SETTINGS.*(setting.valuePtr) = !currentValue;
+    // Every toggle opens the modal picker: Off / On with the current state
+    // preselected. Applying is immediate, saved, and rebuilds the list.
+    static constexpr StrId TOGGLE_OPTIONS[] = {StrId::STR_STATE_OFF, StrId::STR_STATE_ON};
+    const auto valuePtr = setting.valuePtr;
+    optionPopup.show(setting.nameId, TOGGLE_OPTIONS, 2, SETTINGS.*(valuePtr) ? 1 : 0,
+                     [this, valuePtr, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
+                       SETTINGS.*valuePtr = idx != 0;
+                       syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
+                       SETTINGS.saveToFile();
+                       rebuildSettingsLists();
+                     });
+    requestUpdate();
+    return;
   } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
     const uint8_t currentValue = SETTINGS.*(setting.valuePtr);
-    if (setting.enumValues.size() > 2) {
-      const auto valuePtr = setting.valuePtr;
-      optionPopup.show(setting.nameId, setting.enumValues.data(), static_cast<int>(setting.enumValues.size()),
-                       currentValue, [this, valuePtr, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
-                         SETTINGS.*valuePtr = idx;
-                         syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
-                         SETTINGS.saveToFile();
-                         if (valuePtr == &CrossPointSettings::uiTheme)
-                           applyUiSettingChange(valuePtr);
-                         else
-                           rebuildSettingsLists();
-                       });
-      requestUpdate();
-      return;
-    }
-    SETTINGS.*(setting.valuePtr) = (currentValue + 1) % static_cast<uint8_t>(setting.enumValues.size());
+    const auto valuePtr = setting.valuePtr;
+    optionPopup.show(setting.nameId, setting.enumValues.data(), static_cast<int>(setting.enumValues.size()),
+                     currentValue, [this, valuePtr, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
+                       SETTINGS.*valuePtr = idx;
+                       syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
+                       SETTINGS.saveToFile();
+                       if (valuePtr == &CrossPointSettings::uiTheme)
+                         applyUiSettingChange(valuePtr);
+                       else
+                         rebuildSettingsLists();
+                     });
+    requestUpdate();
+    return;
   } else if (setting.type == SettingType::ENUM && setting.valueGetter && setting.valueSetter) {
     const uint8_t totalValues = setting.enumStringValues.empty()
                                     ? static_cast<uint8_t>(setting.enumValues.size())
                                     : static_cast<uint8_t>(setting.enumStringValues.size());
     const uint8_t cur = setting.valueGetter();
-    if (totalValues > 2 || setting.managedEnumPicker) {
+    if (setting.managedEnumPicker || totalValues >= 2) {
       const auto valueSetter = setting.valueSetter;
       const bool managedPicker = setting.managedEnumPicker;
       auto onSelect = [this, valueSetter, sleepScreenChanged, quickResumeTimeoutChanged, managedPicker,
@@ -961,6 +1339,11 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
     return;
   }
 
+  if (usesGridLayout()) {
+    drawSettingsGrid(screen);
+    return;
+  }
+
   {
     GfxRenderer::SyntheticBoldScope syntheticBold(renderer, boldChineseCategories
                                                                 ? CrossPointSettings::SYNTHETIC_BOLD_STANDARD
@@ -1022,9 +1405,12 @@ void SettingsActivity::render(RenderLock&&) {
 
   const int ring = ringPos();
   const auto confirmLabel =
-      (ring == 0) ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
-                  : (ring > 0 && (*currentSettings)[ring - 1].nameId == StrId::STR_TIME_TO_SLEEP ? tr(STR_SELECT)
-                                                                                                 : tr(STR_TOGGLE));
+      usesGridLayout()
+          ? tr(STR_SELECT)
+          : (ring == 0) ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
+                        : (ring > 0 && (*currentSettings)[ring - 1].nameId == StrId::STR_TIME_TO_SLEEP
+                               ? tr(STR_SELECT)
+                               : tr(STR_TOGGLE));
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

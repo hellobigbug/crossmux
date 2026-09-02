@@ -1,4 +1,7 @@
 #pragma once
+
+#include "CrossPointSettings.h"
+#include "components/UITheme.h"
 #include "fontIds.h"
 
 // FreeInkUI font slots. Row heights, header height, and touch sizes are not
@@ -13,12 +16,27 @@ struct UIScaleSpec {
 
 inline UIScaleSpec uiScaleSpec() {
   UIScaleSpec spec{};
-  spec.smallFontId = UI_10_FONT_ID;
-  spec.bodyFontId = UI_10_FONT_ID;
+  // The Nokia theme is built around large soft-key text, so its FreeInkUI
+  // screens (settings, file browser, recents, apps) use the same body size as
+  // the home grid instead of the tiny 10px default. CJK builds keep UI_12 (the
+  // largest inline CJK face); other builds use Noto Sans 16 like the home.
+#ifdef ENABLE_CHINESE_VERSION
+  constexpr int kLargeBodyFont = UI_12_FONT_ID;
+  constexpr int kLargeTitleFont = UI_12_FONT_ID;
+  constexpr int kLargeSmallFont = UI_10_FONT_ID;
+#else
+  constexpr int kLargeBodyFont = NOTOSANS_16_FONT_ID;
+  constexpr int kLargeTitleFont = NOTOSANS_16_FONT_ID;
+  constexpr int kLargeSmallFont = NOTOSANS_14_FONT_ID;
+#endif
+  const bool nokiaTheme =
+      UITheme::getInstance().getType() == CrossPointSettings::UI_THEME::NOKIA;
+  spec.smallFontId = nokiaTheme ? kLargeSmallFont : UI_10_FONT_ID;
+  spec.bodyFontId = nokiaTheme ? kLargeBodyFont : UI_10_FONT_ID;
   // Titles use the UI font, not a reader font: fui headers draw book and
   // directory titles, and the built-in Ubuntu UI fonts cover Hebrew (plus the
   // size-matched SD CJK fallback) where the NotoSans reader subsets do not.
   // Same font develop's drawHeader used, so script coverage matches develop.
-  spec.titleFontId = UI_12_FONT_ID;
+  spec.titleFontId = nokiaTheme ? kLargeTitleFont : UI_12_FONT_ID;
   return spec;
 }
