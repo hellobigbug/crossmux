@@ -2060,13 +2060,14 @@ void WeReadActivity::drawShelfGrid(const Rect& content, const int selectedIndex,
     const Rect cover = geometry.cover;
     const Rect itemBounds = geometry.hit;
     const bool focused = selected && contentFocused;
-    bool foregroundBlack = true;
-    if (focused) {
-      foregroundBlack = GUI.drawSelectionBackground(renderer, itemBounds);
-      renderer.fillRect(cover.x, cover.y, cover.width, cover.height, false);
-    } else if (incrementalFrame) {
-      renderer.fillRect(itemBounds.x, itemBounds.y, itemBounds.width, itemBounds.height, false);
-    }
+    // Rounded shelf card, matching the Nokia home/app grid: selected inverts
+    // to black with a white cover frame and title.
+    constexpr int kShelfRadius = 18;
+    renderer.fillRoundedRect(itemBounds.x, itemBounds.y, itemBounds.width, itemBounds.height, kShelfRadius,
+                             focused ? Color::Black : Color::White);
+    if (!focused) renderer.drawRoundedRect(itemBounds.x, itemBounds.y, itemBounds.width, itemBounds.height, 1,
+                                           kShelfRadius, true);
+    const bool foregroundBlack = !focused;
 
     WeReadStore::ShelfRecord book;
     if (!readShelf(index, book)) return;
@@ -2097,6 +2098,12 @@ void WeReadActivity::drawBookDetail(const Rect& content, const bool coverLoading
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int side = metrics.contentSidePadding;
   const Rect cover{content.x + side, content.y, kDetailCoverWidth, kDetailCoverHeight};
+  constexpr int kCardPad = 6;
+  constexpr int kCardRadius = 14;
+  renderer.fillRoundedRect(cover.x - kCardPad, cover.y - kCardPad, cover.width + kCardPad * 2,
+                           cover.height + kCardPad * 2, kCardRadius, Color::White);
+  renderer.drawRoundedRect(cover.x - kCardPad, cover.y - kCardPad, cover.width + kCardPad * 2,
+                           cover.height + kCardPad * 2, 1, kCardRadius, true);
   renderer.drawRect(cover.x, cover.y, cover.width, cover.height);
   const bool coverDrawn = drawCachedCover(renderer, WeReadStore::bookDirectory(pendingBook_.bookId),
                                           Rect{cover.x + 2, cover.y + 2, cover.width - 4, cover.height - 4});
